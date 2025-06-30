@@ -6,30 +6,57 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Config;
 use Elastic\Elasticsearch\Client;
 
+/**
+ * Команда для индексации моделей в Elasticsearch
+ * 
+ * Эта команда позволяет индексировать модели Laravel в Elasticsearch
+ * с поддержкой различных опций: создание индексов, удаление, переиндексация.
+ * 
+ * Поддерживаемые операции:
+ * - Индексация всех моделей или конкретной модели
+ * - Создание индексов без данных
+ * - Удаление существующих индексов
+ * - Принудительная переиндексация (удаление + создание + индексация)
+ * - Настройка размера чанков для bulk операций
+ */
 class IndexCommand extends Command
 {
     /**
-     * The name and signature of the console command.
+     * Сигнатура команды с доступными опциями
+     * 
+     * Опции:
+     * --model=MODEL    - Индексировать только конкретную модель
+     * --chunk=SIZE     - Размер чанка для bulk индексации
+     * --create-only    - Только создать индекс без индексации данных
+     * --delete-only    - Только удалить существующие индексы
+     * --reindex        - Переиндексация (удалить + создать + индексировать)
      */
-    protected $signature = 'elastic:index {--model=} {--force} {--chunk=}';
+    protected $signature = 'elastic:index {--model=} {--chunk=} {--create-only} {--delete-only} {--reindex}';
 
     /**
-     * The console command description.
+     * Описание команды для справки
      */
     protected $description = 'Index models into Elasticsearch
 
 Options:
   --model=MODEL    Index only a specific model (e.g., "App\\Models\\Product")
-  --force          Force reindexing (delete existing index)
-  --chunk=SIZE     Set chunk size for bulk indexing (default: from config)';
+  --chunk=SIZE     Set chunk size for bulk indexing (default: from config)
+  --create-only    Only create index without indexing data
+  --delete-only    Only delete existing index
+  --reindex        Reindex data (delete and recreate index)';
 
     /**
-     * The Elasticsearch client instance.
+     * Экземпляр клиента Elasticsearch
+     * 
+     * Используется для всех операций с Elasticsearch API
      */
     protected Client $elasticsearch;
 
     /**
-     * Execute the console command.
+     * Основной метод выполнения команды
+     * 
+     * @param Client $elasticsearch Экземпляр клиента Elasticsearch (внедряется через DI)
+     * @return int Код возврата (0 - успех, 1 - ошибка)
      */
     public function handle(Client $elasticsearch): int
     {
@@ -37,7 +64,7 @@ Options:
 
         $this->info('Starting Elasticsearch indexing...');
 
-        // Get models to index
+        // Получаем модели для индексации из конфигурации
         $models = $this->getModelsToIndex();
         
         if (empty($models)) {
@@ -45,9 +72,24 @@ Options:
             return 1;
         }
 
+        // Обрабатываем специальные операции
+        if ($this->option('delete-only')) {
+            return $this->deleteIndexes($models);
+        }
+
+        if ($this->option('create-only')) {
+            return $this->createIndexes($models);
+        }
+
+        if ($this->option('reindex')) {
+            return $this->reindexModels($models);
+        }
+
+        // Создаем прогресс-бар для отображения процесса
         $bar = $this->output->createProgressBar(count($models));
         $bar->start();
 
+        // Индексируем каждую модель
         foreach ($models as $modelClass => $config) {
             try {
                 $this->indexModel($modelClass, $config);
@@ -66,12 +108,16 @@ Options:
     }
 
     /**
-     * Get models to index based on configuration and options.
+     * Получает модели для индексации на основе конфигурации и опций
+     * 
+     * @return array Массив моделей с их конфигурацией
+     * @throws \InvalidArgumentException Если указанная модель не найдена в конфигурации
      */
     protected function getModelsToIndex(): array
     {
         $models = Config::get('elastic.models', []);
         
+        // Если указана конкретная модель, возвращаем только её
         if ($specificModel = $this->option('model')) {
             if (!isset($models[$specificModel])) {
                 throw new \InvalidArgumentException("Model {$specificModel} is not configured for indexing.");
@@ -83,31 +129,35 @@ Options:
     }
 
     /**
-     * Index a specific model.
+     * Индексирует конкретную модель
+     * 
+     * @param string $modelClass Полное имя класса модели
+     * @param array $config Конфигурация модели
+     * @param bool $forceReindex Принудительная переиндексация (удалить существующий индекс)
      */
-    protected function indexModel(string $modelClass, array $config): void
+    protected function indexModel(string $modelClass, array $config, bool $forceReindex = false): void
     {
         $this->line("\nIndexing {$modelClass}...");
 
-        // Get index name
+        // Получаем имя индекса
         $indexName = $this->getIndexName($config);
         
-        // Check if index exists
-        if ($this->indexExists($indexName) && !$this->option('force')) {
-            $this->warn("Index {$indexName} already exists. Use --force to reindex.");
+        // Проверяем существование индекса
+        if ($this->indexExists($indexName) && !$forceReindex) {
+            $this->warn("Index {$indexName} already exists. Use --reindex to force reindexing.");
             return;
         }
 
-        // Create or recreate index
-        $this->createIndex($indexName, $config);
+        // Создаем или пересоздаем индекс
+        $this->createIndex($indexName, $config, $forceReindex);
 
-        // Get model instance
+        // Создаем экземпляр модели
         $model = new $modelClass();
         
-        // Apply query conditions from configuration
+        // Применяем условия запроса из конфигурации
         $query = $this->applyQueryConditions($model, $config);
         
-        // Get total count
+        // Получаем общее количество записей
         $total = $query->count();
         $this->line("Found {$total} records to index.");
 
@@ -116,7 +166,7 @@ Options:
             return;
         }
 
-        // Index data in chunks
+        // Определяем размер чанка для индексации
         $configChunkSize = $config['chunk_size'] ?? 1000;
         $optionChunkSize = $this->option('chunk');
         
@@ -128,9 +178,11 @@ Options:
         
         $this->line("Using chunk size: {$chunkSize}");
 
+        // Создаем прогресс-бар для отображения процесса индексации
         $bar = $this->output->createProgressBar($total);
         $bar->start();
 
+        // Индексируем данные чанками для оптимизации памяти
         $query->chunk($chunkSize, function ($records) use ($indexName, $config, $bar) {
             $this->indexChunk($records, $indexName, $config);
             $bar->advance($records->count());
@@ -143,7 +195,10 @@ Options:
     }
 
     /**
-     * Get the index name for a model.
+     * Получает имя индекса для модели
+     * 
+     * @param array $config Конфигурация модели
+     * @return string Имя индекса с префиксом (если настроен)
      */
     protected function getIndexName(array $config): string
     {
@@ -158,11 +213,15 @@ Options:
     }
 
     /**
-     * Check if an index exists.
+     * Проверяет существование индекса в Elasticsearch
+     * 
+     * @param string $indexName Имя индекса
+     * @return bool True если индекс существует, false в противном случае
      */
     protected function indexExists(string $indexName): bool
     {
         try {
+            // Используем API Elasticsearch 8.x для проверки существования индекса
             $response = $this->elasticsearch->indices()->exists(['index' => $indexName]);
             return $response->getStatusCode() === 200;
         } catch (\Exception $e) {
@@ -171,25 +230,29 @@ Options:
     }
 
     /**
-     * Create an index with proper mapping.
+     * Создает индекс с правильным маппингом
+     * 
+     * @param string $indexName Имя индекса
+     * @param array $config Конфигурация модели
+     * @param bool $forceReindex Принудительная переиндексация (удалить существующий индекс)
      */
-    protected function createIndex(string $indexName, array $config): void
+    protected function createIndex(string $indexName, array $config, bool $forceReindex = false): void
     {
         $this->line("Creating index: {$indexName}");
 
-        // Delete existing index if force option is used
-        if ($this->option('force') && $this->indexExists($indexName)) {
+        // Удаляем существующий индекс если требуется принудительная переиндексация
+        if ($forceReindex && $this->indexExists($indexName)) {
             $this->elasticsearch->indices()->delete(['index' => $indexName]);
             $this->line("Deleted existing index: {$indexName}");
         }
 
-        // Prepare index settings
+        // Подготавливаем настройки индекса
         $settings = $this->getIndexSettings($config);
         
-        // Prepare mapping
+        // Подготавливаем маппинг
         $mapping = $this->getIndexMapping($config);
 
-        // Create index
+        // Создаем индекс с настройками и маппингом
         $params = [
             'index' => $indexName,
             'body' => [
@@ -203,7 +266,13 @@ Options:
     }
 
     /**
-     * Get index settings from configuration.
+     * Получает настройки индекса из конфигурации
+     * 
+     * Объединяет настройки по умолчанию, настройки модели и настройки анализа
+     * для создания полной конфигурации индекса Elasticsearch
+     * 
+     * @param array $config Конфигурация модели
+     * @return array Настройки индекса для Elasticsearch
      */
     protected function getIndexSettings(array $config): array
     {
@@ -219,13 +288,19 @@ Options:
     }
 
     /**
-     * Get index mapping from configuration.
+     * Создает маппинг индекса из конфигурации
+     * 
+     * Преобразует конфигурацию полей модели в маппинг Elasticsearch
+     * с поддержкой multi-field mapping для различных анализаторов
+     * 
+     * @param array $config Конфигурация модели
+     * @return array Маппинг для Elasticsearch
      */
     protected function getIndexMapping(array $config): array
     {
         $properties = [];
 
-        // Add searchable fields
+        // Добавляем поля для поиска
         foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
             $properties[$field] = [
                 'type' => $fieldConfig['type'] ?? 'text',
@@ -238,9 +313,27 @@ Options:
             if (isset($fieldConfig['boost'])) {
                 $properties[$field]['boost'] = $fieldConfig['boost'];
             }
+
+            // Добавляем multi-field mappings для разных анализаторов
+            if (isset($fieldConfig['fields'])) {
+                $properties[$field]['fields'] = [];
+                foreach ($fieldConfig['fields'] as $subField => $subFieldConfig) {
+                    $properties[$field]['fields'][$subField] = [
+                        'type' => $subFieldConfig['type'] ?? 'text',
+                    ];
+
+                    if (isset($subFieldConfig['analyzer'])) {
+                        $properties[$field]['fields'][$subField]['analyzer'] = $subFieldConfig['analyzer'];
+                    }
+
+                    if (isset($subFieldConfig['boost'])) {
+                        $properties[$field]['fields'][$subField]['boost'] = $subFieldConfig['boost'];
+                    }
+                }
+            }
         }
 
-        // Add computed fields
+        // Добавляем вычисляемые поля
         foreach ($config['computed_fields'] ?? [] as $field => $fieldConfig) {
             $properties[$field] = [
                 'type' => $fieldConfig['type'] ?? 'text',
@@ -261,16 +354,24 @@ Options:
     }
 
     /**
-     * Index a chunk of records.
+     * Индексирует чанк записей в Elasticsearch
+     * 
+     * Использует bulk API Elasticsearch для эффективной индексации
+     * множества документов за одну операцию
+     * 
+     * @param \Illuminate\Database\Eloquent\Collection $records Коллекция записей для индексации
+     * @param string $indexName Имя индекса
+     * @param array $config Конфигурация модели
      */
     protected function indexChunk($records, string $indexName, array $config): void
     {
         $body = [];
 
         foreach ($records as $record) {
-            // Prepare document data
+            // Подготавливаем данные документа
             $document = $this->prepareDocument($record, $config);
             
+            // Добавляем метаданные для bulk операции
             $body[] = [
                 'index' => [
                     '_index' => $indexName,
@@ -278,36 +379,45 @@ Options:
                 ],
             ];
             
+            // Добавляем сам документ
             $body[] = $document;
         }
 
         if (!empty($body)) {
+            // Выполняем bulk операцию для индексации всех документов
             $this->elasticsearch->bulk(['body' => $body]);
         }
     }
 
     /**
-     * Prepare document data for indexing.
+     * Подготавливает данные документа для индексации
+     * 
+     * Собирает все необходимые поля из записи модели
+     * включая хранимые поля, поля для поиска и вычисляемые поля
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param array $config Конфигурация модели
+     * @return array Данные документа для Elasticsearch
      */
     protected function prepareDocument($record, array $config): array
     {
         $document = [];
 
-        // Add stored fields
+        // Добавляем хранимые поля (возвращаются напрямую из Elasticsearch)
         foreach ($config['stored_fields'] ?? [] as $field) {
             if (array_key_exists($field, $record->getAttributes())) {
                 $document[$field] = $record->getAttribute($field);
             }
         }
 
-        // Add searchable fields
+        // Добавляем поля для поиска
         foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
             if (array_key_exists($field, $record->getAttributes())) {
                 $document[$field] = $record->getAttribute($field);
             }
         }
 
-        // Add computed fields
+        // Добавляем вычисляемые поля
         foreach ($config['computed_fields'] ?? [] as $field => $fieldConfig) {
             $document[$field] = $this->computeField($record, $fieldConfig);
         }
@@ -316,10 +426,19 @@ Options:
     }
 
     /**
-     * Compute a field value based on configuration.
+     * Вычисляет значение поля на основе конфигурации
+     * 
+     * Поддерживает два типа вычислений:
+     * - source: объединение нескольких полей в одно
+     * - transform: применение трансформации к значению
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param array $fieldConfig Конфигурация поля
+     * @return mixed Вычисленное значение поля
      */
     protected function computeField($record, array $fieldConfig): mixed
     {
+        // Если указан source, объединяем несколько полей
         if (isset($fieldConfig['source'])) {
             $sources = (array) $fieldConfig['source'];
             $values = [];
@@ -333,6 +452,7 @@ Options:
             return implode(' ', array_filter($values));
         }
 
+        // Если указана трансформация, применяем её
         if (isset($fieldConfig['transform'])) {
             return $this->transformField($record, $fieldConfig['transform']);
         }
@@ -341,11 +461,19 @@ Options:
     }
 
     /**
-     * Transform a field value.
+     * Применяет трансформацию к значению поля
+     * 
+     * Поддерживаемые трансформации:
+     * - price_range: группировка цен по диапазонам
+     * - popularity_score: расчет популярности на основе нескольких полей
+     * - availability_status: определение статуса доступности
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param string $transform Тип трансформации
+     * @return mixed Трансформированное значение
      */
     protected function transformField($record, string $transform): mixed
     {
-        // Add custom transformers here
         switch ($transform) {
             case 'price_range':
                 $price = $record->getAttribute('price');
@@ -353,13 +481,38 @@ Options:
                 if ($price <= 10000) return 'medium';
                 return 'high';
             
+            case 'popularity_score':
+                $viewsCount = $record->getAttribute('views_count') ?? 0;
+                $salesCount = $record->getAttribute('sales_count') ?? 0;
+                $rating = $record->getAttribute('rating') ?? 0;
+                
+                // Простая формула для расчета популярности
+                $popularity = ($viewsCount * 0.1) + ($salesCount * 0.5) + ($rating * 10);
+                return round($popularity, 2);
+            
+            case 'availability_status':
+                $stockQuantity = $record->getAttribute('stock_quantity') ?? 0;
+                $isActive = $record->getAttribute('is_active') ?? false;
+                
+                if (!$isActive) return 'inactive';
+                if ($stockQuantity <= 0) return 'out_of_stock';
+                if ($stockQuantity <= 10) return 'low_stock';
+                return 'in_stock';
+            
             default:
                 return null;
         }
     }
 
     /**
-     * Apply query conditions from configuration.
+     * Применяет условия запроса из конфигурации
+     * 
+     * Позволяет фильтровать записи перед индексацией
+     * Поддерживает различные типы условий: where, where_in, where_between, where_has и др.
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $model Экземпляр модели
+     * @param array $config Конфигурация модели
+     * @return \Illuminate\Database\Eloquent\Builder Query Builder с примененными условиями
      */
     protected function applyQueryConditions($model, array $config)
     {
@@ -367,7 +520,7 @@ Options:
 
         $conditions = $config['query_conditions'] ?? [];
 
-        // Apply basic WHERE conditions
+        // Применяем базовые условия WHERE
         foreach ($conditions['where'] ?? [] as $field => $value) {
             if ($value === 'not_null') {
                 $query->whereNotNull($field);
@@ -378,19 +531,19 @@ Options:
             }
         }
 
-        // Apply WHERE IN conditions
+        // Применяем условия WHERE IN
         foreach ($conditions['where_in'] ?? [] as $field => $values) {
             $query->whereIn($field, $values);
         }
 
-        // Apply WHERE BETWEEN conditions
+        // Применяем условия WHERE BETWEEN
         foreach ($conditions['where_between'] ?? [] as $field => $values) {
             if (is_array($values) && count($values) === 2) {
                 $query->whereBetween($field, $values);
             }
         }
 
-        // Apply WHERE HAS conditions (for relationships)
+        // Применяем условия WHERE HAS (для отношений)
         foreach ($conditions['where_has'] ?? [] as $relation => $callback) {
             if (is_callable($callback)) {
                 $query->whereHas($relation, $callback);
@@ -403,16 +556,112 @@ Options:
             }
         }
 
-        // Apply WHERE DOESN'T HAVE conditions
+        // Применяем условия WHERE DOESN'T HAVE
         foreach ($conditions['where_doesnt_have'] ?? [] as $relation) {
             $query->whereDoesntHave($relation);
         }
 
-        // Apply custom callback conditions
+        // Применяем кастомные условия через замыкание
         if (isset($conditions['where_callback']) && is_callable($conditions['where_callback'])) {
             $conditions['where_callback']($query);
         }
 
         return $query;
+    }
+
+    /**
+     * Удаляет индексы для всех моделей
+     * 
+     * Используется с опцией --delete-only
+     * Удаляет все индексы, настроенные в конфигурации
+     * 
+     * @param array $models Массив моделей с их конфигурацией
+     * @return int Код возврата (0 - успех, 1 - ошибка)
+     */
+    protected function deleteIndexes(array $models): int
+    {
+        $this->info('Deleting Elasticsearch indexes...');
+
+        foreach ($models as $modelClass => $config) {
+            $indexName = $this->getIndexName($config);
+            
+            if ($this->indexExists($indexName)) {
+                try {
+                    // Используем API Elasticsearch 8.x для удаления индекса
+                    $this->elasticsearch->indices()->delete(['index' => $indexName]);
+                    $this->info("Deleted index: {$indexName}");
+                } catch (\Exception $e) {
+                    $this->error("Failed to delete index {$indexName}: " . $e->getMessage());
+                    return 1;
+                }
+            } else {
+                $this->warn("Index {$indexName} does not exist.");
+            }
+        }
+
+        $this->info('Index deletion completed!');
+        return 0;
+    }
+
+    /**
+     * Создает индексы для всех моделей без индексации данных
+     * 
+     * Используется с опцией --create-only
+     * Создает только структуру индексов с маппингом, но не индексирует данные
+     * 
+     * @param array $models Массив моделей с их конфигурацией
+     * @return int Код возврата (0 - успех, 1 - ошибка)
+     */
+    protected function createIndexes(array $models): int
+    {
+        $this->info('Creating Elasticsearch indexes...');
+
+        foreach ($models as $modelClass => $config) {
+            $indexName = $this->getIndexName($config);
+            
+            if ($this->indexExists($indexName)) {
+                $this->warn("Index {$indexName} already exists.");
+                continue;
+            }
+
+            try {
+                $this->createIndex($indexName, $config, false);
+                $this->info("Created index: {$indexName}");
+            } catch (\Exception $e) {
+                $this->error("Failed to create index {$indexName}: " . $e->getMessage());
+                return 1;
+            }
+        }
+
+        $this->info('Index creation completed!');
+        return 0;
+    }
+
+    /**
+     * Переиндексирует все модели (удаляет и пересоздает индексы с данными)
+     * 
+     * Используется с опцией --reindex
+     * Полный цикл: удаление индекса -> создание индекса -> индексация данных
+     * 
+     * @param array $models Массив моделей с их конфигурацией
+     * @return int Код возврата (0 - успех, 1 - ошибка)
+     */
+    protected function reindexModels(array $models): int
+    {
+        $this->info('Reindexing Elasticsearch data...');
+
+        foreach ($models as $modelClass => $config) {
+            try {
+                // Принудительная переиндексация (удаление + создание + индексация)
+                $this->indexModel($modelClass, $config, true);
+                $this->info("Reindexed: {$modelClass}");
+            } catch (\Exception $e) {
+                $this->error("Failed to reindex {$modelClass}: " . $e->getMessage());
+                return 1;
+            }
+        }
+
+        $this->info('Reindexing completed successfully!');
+        return 0;
     }
 } 

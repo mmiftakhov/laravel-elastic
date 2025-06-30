@@ -295,14 +295,14 @@ Options:
 
         // Add stored fields
         foreach ($config['stored_fields'] ?? [] as $field) {
-            if ($record->hasAttribute($field)) {
+            if (array_key_exists($field, $record->getAttributes())) {
                 $document[$field] = $record->getAttribute($field);
             }
         }
 
         // Add searchable fields
         foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
-            if ($record->hasAttribute($field)) {
+            if (array_key_exists($field, $record->getAttributes())) {
                 $document[$field] = $record->getAttribute($field);
             }
         }
@@ -325,7 +325,7 @@ Options:
             $values = [];
             
             foreach ($sources as $source) {
-                if ($record->hasAttribute($source)) {
+                if (array_key_exists($source, $record->getAttributes())) {
                     $values[] = $record->getAttribute($source);
                 }
             }

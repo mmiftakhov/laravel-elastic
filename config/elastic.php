@@ -215,7 +215,7 @@ return [
 
     'models' => [
         // Example configuration for a Product model
-        'App\Models\Product' => [
+        'App\\Models\\Product' => [
             // Index name (will be prefixed with the configured prefix)
             'index' => 'products',
             
@@ -223,33 +223,28 @@ return [
             'searchable_fields' => [
                 'name' => [
                     'type' => 'text',
-                    'boost' => 3.0, // Higher weight for name field
-                    'analyzer' => 'russian', // Использует кастомный русский анализатор
+                    'analyzer' => 'russian',
                 ],
                 'description' => [
                     'type' => 'text',
-                    'boost' => 1.0,
-                    'analyzer' => 'russian', // Для поиска по описанию на русском
+                    'analyzer' => 'russian',
                 ],
                 'category' => [
-                    'type' => 'keyword', // Точное совпадение для категорий
-                    'boost' => 2.0,
+                    'type' => 'keyword',
                 ],
                 'brand' => [
-                    'type' => 'keyword', // Точное совпадение для брендов
-                    'boost' => 2.0,
+                    'type' => 'keyword',
                 ],
                 'tags' => [
-                    'type' => 'keyword', // Точное совпадение для тегов
-                    'boost' => 1.5,
+                    'type' => 'keyword',
                 ],
                 'sku' => [
                     'type' => 'text',
-                    'analyzer' => 'exact_match', // Для поиска по точному SKU
+                    'analyzer' => 'exact_match',
                 ],
                 'search_suggestions' => [
                     'type' => 'text',
-                    'analyzer' => 'partial_match', // Для автодополнения
+                    'analyzer' => 'partial_match',
                 ],
             ],
             
@@ -275,14 +270,13 @@ return [
             'computed_fields' => [
                 'search_text' => [
                     'type' => 'text',
-                    'boost' => 1.0,
-                    'analyzer' => 'russian', // Объединенный поисковый текст
+                    'analyzer' => 'russian',
                     'source' => ['name', 'description', 'category', 'brand', 'tags'],
                 ],
                 'price_range' => [
                     'type' => 'keyword',
                     'source' => 'price',
-                    'transform' => 'price_range', // Custom transformer
+                    'transform' => 'price_range',
                 ],
             ],
             
@@ -346,94 +340,7 @@ return [
             
             // Custom index settings for this specific model (optional)
             'index_settings' => [
-                // Можно переопределить настройки анализа для конкретной модели
-                // 'analysis' => [
-                //     'analyzer' => [
-                //         'custom_product_analyzer' => [
-                //             'type' => 'custom',
-                //             'tokenizer' => 'standard',
-                //             'filter' => ['lowercase', 'word_delimiter'],
-                //         ],
-                //     ],
-                // ],
-            ],
-        ],
-        
-        // Example configuration for a User model
-        'App\Models\User' => [
-            'index' => 'users',
-            
-            'searchable_fields' => [
-                'name' => [
-                    'type' => 'text',
-                    'boost' => 2.0,
-                    'analyzer' => 'russian',
-                ],
-                'email' => [
-                    'type' => 'keyword', // Точное совпадение для email
-                ],
-                'username' => [
-                    'type' => 'text',
-                    'analyzer' => 'exact_match',
-                ],
-                'bio' => [
-                    'type' => 'text',
-                    'boost' => 1.0,
-                    'analyzer' => 'russian',
-                ],
-            ],
-            
-            'stored_fields' => [
-                'id',
-                'name',
-                'email',
-                'username',
-                'avatar',
-                'created_at',
-            ],
-            
-            'relations' => [
-                'profile',
-                'posts',
-            ],
-            
-            'computed_fields' => [
-                'full_name' => [
-                    'type' => 'text',
-                    'analyzer' => 'russian',
-                    'source' => ['first_name', 'last_name'],
-                ],
-            ],
-            
-            'query' => [
-                'default_operator' => 'AND',
-                'fuzziness' => 'AUTO',
-            ],
-            
-            'chunk_size' => 500,
-            
-            'soft_deletes' => true,
-            
-            // Условия для пользователей - только активные и подтвержденные
-            'query_conditions' => [
-                'where' => [
-                    'is_active' => true,
-                    'email_verified_at' => 'not_null', // Подтвержденные email
-                    'deleted_at' => null,
-                ],
-                
-                'where_in' => [
-                    'status' => ['active', 'verified'], // Только активные и верифицированные
-                ],
-                
-                'where_doesnt_have' => [
-                    'bans', // Исключить заблокированных пользователей
-                ],
-                
-                'where_callback' => function($query) {
-                    $query->where('last_login_at', '>', now()->subDays(365)) // Активные за год
-                          ->orWhere('created_at', '>', now()->subDays(30)); // Или новые пользователи
-                },
+                // Можно добавить кастомные настройки для индекса
             ],
         ],
     ],

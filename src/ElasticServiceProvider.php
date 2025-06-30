@@ -18,10 +18,12 @@ class ElasticServiceProvider extends ServiceProvider
             'elastic'
         );
 
-        // Bind the Elasticsearch client as a singleton
-        $this->app->singleton('elastic', function ($app) {
+        // Bind the Elasticsearch client as a singleton (по типу!)
+        $this->app->singleton(\Elastic\Elasticsearch\Client::class, function ($app) {
             $config = $app['config']->get('elastic');
-            return ClientBuilder::fromConfig($config);
+            return \Elastic\Elasticsearch\ClientBuilder::create()
+                ->setHosts($config['hosts'] ?? ['localhost:9200'])
+                ->build();
         });
     }
 

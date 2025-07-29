@@ -419,7 +419,7 @@ Options:
         }
 
         // Обрабатываем translatable поля
-        $document = $this->processTranslatableFields($record, $document);
+        $document = $this->processTranslatableFields($record, $document, $config);
 
         // Добавляем вычисляемые поля
         foreach ($config['computed_fields'] ?? [] as $field => $fieldConfig) {
@@ -432,36 +432,41 @@ Options:
     /**
      * Обрабатывает translatable поля из JSON структуры
      * 
-     * Извлекает значения для каждого языка из translatable полей
-     * и добавляет их как отдельные поля в документ
+     * Автоматически определяет translatable поля по типу данных и конфигурации,
+     * извлекает значения для каждого языка и добавляет их как отдельные поля в документ.
      * 
      * @param \Illuminate\Database\Eloquent\Model $record Запись модели
      * @param array $document Текущий документ
+     * @param array $config Конфигурация модели
      * @return array Обновленный документ с языковыми полями
      */
-    protected function processTranslatableFields($record, array $document): array
+    protected function processTranslatableFields($record, array $document, array $config): array
     {
-        // Список translatable полей
-        $translatableFields = ['title', 'slug', 'short_description', 'specification'];
+        // Получаем настройки translatable полей (глобальные + переопределения модели)
+        $translatableConfig = $this->getTranslatableConfig($config);
+        
+        // Определяем translatable поля
+        $translatableFields = $this->getTranslatableFields($record, $translatableConfig);
         
         foreach ($translatableFields as $field) {
             if (array_key_exists($field, $record->getAttributes())) {
                 $translatableValue = $record->getAttribute($field);
                 
-                // Если поле содержит JSON (translatable)
-                if (is_array($translatableValue) || is_object($translatableValue)) {
+                // Проверяем, является ли поле translatable, используя getRawOriginal()
+                if ($this->isTranslatableField($record, $field, $translatableConfig)) {
                     $translatableArray = is_object($translatableValue) ? (array) $translatableValue : $translatableValue;
                     
-                    // Добавляем основное поле (используем английский как fallback)
-                    $document[$field] = $translatableArray['en'] ?? $translatableArray['lv'] ?? '';
+                    // Добавляем основное поле (используем fallback язык)
+                    $fallbackLocale = $translatableConfig['fallback_locale'];
+                    $document[$field] = $translatableArray[$fallbackLocale] ?? $this->getFirstAvailableValue($translatableArray, $translatableConfig['locales']);
                     
-                    // Добавляем языковые версии
-                    if (isset($translatableArray['en'])) {
-                        $document[$field . '_en'] = $translatableArray['en'];
-                    }
-                    
-                    if (isset($translatableArray['lv'])) {
-                        $document[$field . '_lv'] = $translatableArray['lv'];
+                    // Добавляем языковые версии, если включено в конфигурации
+                    if ($translatableConfig['index_localized_fields']) {
+                        foreach ($translatableConfig['locales'] as $locale) {
+                            if (isset($translatableArray[$locale])) {
+                                $document[$field . '_' . $locale] = $translatableArray[$locale];
+                            }
+                        }
                     }
                 } else {
                     // Если поле не translatable, оставляем как есть
@@ -471,6 +476,109 @@ Options:
         }
         
         return $document;
+    }
+
+    /**
+     * Получает конфигурацию translatable полей
+     * 
+     * Объединяет глобальные настройки с настройками конкретной модели
+     * 
+     * @param array $config Конфигурация модели
+     * @return array Конфигурация translatable полей
+     */
+    protected function getTranslatableConfig(array $config): array
+    {
+        $globalConfig = config('elastic.translatable', []);
+        $modelConfig = $config['translatable'] ?? [];
+        
+        return array_merge($globalConfig, $modelConfig);
+    }
+
+    /**
+     * Определяет translatable поля для записи
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param array $translatableConfig Конфигурация translatable полей
+     * @return array Массив имен translatable полей
+     */
+    protected function getTranslatableFields($record, array $translatableConfig): array
+    {
+        if (!$translatableConfig['auto_detect_translatable']) {
+            return $translatableConfig['translatable_fields'] ?? [];
+        }
+        
+        // Автоматически определяем translatable поля
+        $translatableFields = [];
+        $attributes = $record->getAttributes();
+        
+        foreach ($attributes as $field => $value) {
+            if ($this->isTranslatableField($record, $field, $translatableConfig)) {
+                $translatableFields[] = $field;
+            }
+        }
+        
+        return $translatableFields;
+    }
+
+    /**
+     * Проверяет, является ли поле translatable
+     * 
+     * Использует getRawOriginal() для определения типа данных поля
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param string $field Имя поля
+     * @param array $translatableConfig Конфигурация translatable полей
+     * @return bool True, если поле translatable
+     */
+    protected function isTranslatableField($record, string $field, array $translatableConfig): bool
+    {
+        // Если auto_detect отключен, проверяем только по списку
+        if (!$translatableConfig['auto_detect_translatable']) {
+            return in_array($field, $translatableConfig['translatable_fields'] ?? []);
+        }
+        
+        // Получаем оригинальное значение поля (до аксессоров)
+        $originalValue = $record->getRawOriginal($field);
+        
+        // Если значение null или не строка, не может быть translatable
+        if ($originalValue === null || !is_string($originalValue)) {
+            return false;
+        }
+        
+        // Пытаемся декодировать JSON
+        $decoded = json_decode($originalValue, true);
+        
+        // Если это валидный JSON и содержит языковые ключи
+        if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+            $locales = $translatableConfig['locales'];
+            
+            // Проверяем, содержит ли JSON хотя бы один из поддерживаемых языков
+            foreach ($locales as $locale) {
+                if (isset($decoded[$locale]) && is_string($decoded[$locale])) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Получает первое доступное значение из translatable массива
+     * 
+     * @param array $translatableArray Массив с переводами
+     * @param array $locales Поддерживаемые языки
+     * @return string Первое доступное значение или пустая строка
+     */
+    protected function getFirstAvailableValue(array $translatableArray, array $locales): string
+    {
+        foreach ($locales as $locale) {
+            if (isset($translatableArray[$locale]) && is_string($translatableArray[$locale])) {
+                return $translatableArray[$locale];
+            }
+        }
+        
+        return '';
     }
 
     /**

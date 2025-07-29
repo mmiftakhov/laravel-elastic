@@ -329,6 +329,38 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Translatable Fields Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Глобальные настройки для обработки translatable полей (JSON структур с переводами).
+    | Эти настройки применяются ко всем моделям, если не переопределены в конфигурации модели.
+    |
+    | Документация:
+    | - https://www.elastic.co/guide/en/elasticsearch/reference/8.18/mapping.html
+    | - https://www.elastic.co/guide/en/elasticsearch/reference/8.18/mapping-types.html
+    |
+    */
+    'translatable' => [
+        // Поддерживаемые языки для translatable полей
+        'locales' => ['en', 'lv'],
+        
+        // Основной язык для fallback (если перевод не найден)
+        'fallback_locale' => 'en',
+        
+        // Создавать ли отдельные поля для каждого языка (fieldName_localeName)
+        'index_localized_fields' => true,
+        
+        // Автоматически определять translatable поля по типу данных
+        'auto_detect_translatable' => true,
+        
+        // Список полей, которые всегда считаются translatable (если auto_detect = false)
+        'translatable_fields' => [
+            'title', 'slug', 'short_description', 'specification', 'description', 'content'
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Model Indexing Configuration
     |--------------------------------------------------------------------------
     |
@@ -338,6 +370,17 @@ return [
     |
     | Каждая модель может иметь свои собственные правила индексации,
     | включая маппинг полей, условия запросов и настройки производительности.
+    |
+    | Translatable Fields (Переводимые поля):
+    | ---------------------------------------
+    | Для многоязычных проектов можно настроить автоматическую обработку
+    | translatable полей (JSON структуры с переводами).
+    |
+    | Настройки translatable полей:
+    | - locales: массив поддерживаемых языков (например, ['en', 'lv', 'ru'])
+    | - fallback_locale: основной язык для fallback (например, 'en')
+    | - index_localized_fields: создавать ли отдельные поля для каждого языка
+    | - auto_detect_translatable: автоматически определять translatable поля
     |
     | Query Conditions (Условия запросов):
     | ------------------------------------
@@ -398,6 +441,17 @@ return [
         'App\\Models\\Product' => [
             // Имя индекса (будет добавлен префикс из конфигурации)
             'index' => 'products',
+            
+            // Настройки translatable полей для этой модели (переопределяют глобальные)
+            'translatable' => [
+                'locales' => ['en', 'lv'],           // Поддерживаемые языки для этой модели
+                'fallback_locale' => 'en',                 // Основной язык для fallback
+                'index_localized_fields' => true,          // Создавать отдельные поля для каждого языка
+                'auto_detect_translatable' => true,        // Автоматически определять translatable поля
+                'translatable_fields' => [                 // Список полей (если auto_detect = false)
+                    'title', 'slug', 'short_description', 'specification', 'description'
+                ],
+            ],
             
             // Поля для поиска - определяют как индексировать данные для поиска
             // Каждое поле может иметь свой тип, анализатор и настройки

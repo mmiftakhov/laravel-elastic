@@ -16,7 +16,7 @@ echo "Релиз версии $VERSION..."
 sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" composer.json
 
 # Создать коммит
-git add composer.json
+git add .
 git commit -m "Release version $VERSION"
 
 # Создать тег

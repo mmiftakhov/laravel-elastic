@@ -248,19 +248,84 @@ public function autocomplete(Request $request, ElasticSearch $elasticSearch)
 
 ## Многоязычная поддержка
 
-Для многоязычных проектов можно настроить поля для разных языков:
+Пакет поддерживает автоматическую обработку translatable полей (JSON структур с переводами).
+
+### Глобальные настройки
+
+В конфигурации `config/elastic.php` можно настроить глобальные параметры для translatable полей:
+
+```php
+'translatable' => [
+    'locales' => ['en', 'lv', 'ru'],           // Поддерживаемые языки
+    'fallback_locale' => 'en',                 // Основной язык для fallback
+    'index_localized_fields' => true,          // Создавать отдельные поля для каждого языка
+    'auto_detect_translatable' => true,        // Автоматически определять translatable поля
+    'translatable_fields' => [                 // Список полей (если auto_detect = false)
+        'title', 'slug', 'short_description', 'specification', 'description', 'content'
+    ],
+],
+```
+
+### Настройки для конкретной модели
+
+Можно переопределить настройки для конкретной модели:
+
+```php
+'App\\Models\\Product' => [
+    'index' => 'products',
+    
+    // Настройки translatable полей для этой модели
+    'translatable' => [
+        'locales' => ['en', 'lv'],             // Только английский и латышский
+        'fallback_locale' => 'en',             // Английский как fallback
+        'index_localized_fields' => true,      // Создавать поля title_en, title_lv и т.д.
+        'auto_detect_translatable' => true,    // Автоматически определять translatable поля
+    ],
+    
+    'searchable_fields' => [
+        'title' => [
+            'type' => 'text',
+            'analyzer' => 'english',
+        ],
+        // Автоматически создаются поля title_en, title_lv и т.д.
+    ],
+],
+```
+
+### Автоматическое определение translatable полей
+
+Пакет автоматически определяет translatable поля, анализируя JSON структуру в базе данных:
+
+```php
+// В базе данных поле title содержит JSON:
+{
+    "en": "Product Name",
+    "lv": "Produkta nosaukums",
+    "ru": "Название продукта"
+}
+
+// Пакет автоматически создаст поля:
+// - title (основное поле с fallback значением)
+// - title_en (английская версия)
+// - title_lv (латышская версия)
+// - title_ru (русская версия)
+```
+
+### Ручная настройка полей
+
+Если автоматическое определение отключено, можно указать поля вручную:
 
 ```php
 'searchable_fields' => [
-    'name' => [
-        'type' => 'text',
-        'analyzer' => 'russian',
-    ],
-    'name_en' => [
+    'title' => [
         'type' => 'text',
         'analyzer' => 'english',
     ],
-    'name_lv' => [
+    'title_en' => [
+        'type' => 'text',
+        'analyzer' => 'english',
+    ],
+    'title_lv' => [
         'type' => 'text',
         'analyzer' => 'latvian',
     ],

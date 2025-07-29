@@ -454,19 +454,27 @@ Options:
                 
                 // Проверяем, является ли поле translatable, используя getRawOriginal()
                 if ($this->isTranslatableField($record, $field, $translatableConfig)) {
-                    $translatableArray = is_object($translatableValue) ? (array) $translatableValue : $translatableValue;
+                    // Получаем оригинальное значение и декодируем JSON
+                    $originalValue = $record->getRawOriginal($field);
+                    $translatableArray = json_decode($originalValue, true);
                     
-                    // Добавляем основное поле (используем fallback язык)
-                    $fallbackLocale = $translatableConfig['fallback_locale'];
-                    $document[$field] = $translatableArray[$fallbackLocale] ?? $this->getFirstAvailableValue($translatableArray, $translatableConfig['locales']);
-                    
-                    // Добавляем языковые версии, если включено в конфигурации
-                    if ($translatableConfig['index_localized_fields']) {
-                        foreach ($translatableConfig['locales'] as $locale) {
-                            if (isset($translatableArray[$locale])) {
-                                $document[$field . '_' . $locale] = $translatableArray[$locale];
+                    // Проверяем, что декодирование прошло успешно и это массив
+                    if (is_array($translatableArray)) {
+                        // Добавляем основное поле (используем fallback язык)
+                        $fallbackLocale = $translatableConfig['fallback_locale'];
+                        $document[$field] = $translatableArray[$fallbackLocale] ?? $this->getFirstAvailableValue($translatableArray, $translatableConfig['locales']);
+                        
+                        // Добавляем языковые версии, если включено в конфигурации
+                        if ($translatableConfig['index_localized_fields']) {
+                            foreach ($translatableConfig['locales'] as $locale) {
+                                if (isset($translatableArray[$locale])) {
+                                    $document[$field . '_' . $locale] = $translatableArray[$locale];
+                                }
                             }
                         }
+                    } else {
+                        // Если декодирование не удалось, используем значение как есть
+                        $document[$field] = $translatableValue;
                     }
                 } else {
                     // Если поле не translatable, оставляем как есть
@@ -491,7 +499,16 @@ Options:
         $globalConfig = config('elastic.translatable', []);
         $modelConfig = $config['translatable'] ?? [];
         
-        return array_merge($globalConfig, $modelConfig);
+        $mergedConfig = array_merge($globalConfig, $modelConfig);
+        
+        // Устанавливаем значения по умолчанию, если они отсутствуют
+        $mergedConfig['locales'] = $mergedConfig['locales'] ?? ['en'];
+        $mergedConfig['fallback_locale'] = $mergedConfig['fallback_locale'] ?? 'en';
+        $mergedConfig['index_localized_fields'] = $mergedConfig['index_localized_fields'] ?? true;
+        $mergedConfig['auto_detect_translatable'] = $mergedConfig['auto_detect_translatable'] ?? true;
+        $mergedConfig['translatable_fields'] = $mergedConfig['translatable_fields'] ?? [];
+        
+        return $mergedConfig;
     }
 
     /**
@@ -572,6 +589,11 @@ Options:
      */
     protected function getFirstAvailableValue(array $translatableArray, array $locales): string
     {
+        // Проверяем, что передан массив
+        if (!is_array($translatableArray)) {
+            return '';
+        }
+        
         foreach ($locales as $locale) {
             if (isset($translatableArray[$locale]) && is_string($translatableArray[$locale])) {
                 return $translatableArray[$locale];

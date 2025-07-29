@@ -26,8 +26,6 @@ php artisan vendor:publish --provider="Maratmiftahov\LaravelElastic\ElasticServi
 ],
 
 'connection' => [
-    'timeout' => env('ELASTICSEARCH_TIMEOUT', 30),
-    'connect_timeout' => env('ELASTICSEARCH_CONNECT_TIMEOUT', 10),
     'retries' => env('ELASTICSEARCH_RETRIES', 3),
 ],
 ```
@@ -107,7 +105,6 @@ php artisan vendor:publish --provider="Maratmiftahov\LaravelElastic\ElasticServi
         ],
         
         'chunk_size' => 1000,
-        'soft_deletes' => true,
     ],
 ],
 ```
@@ -285,17 +282,6 @@ $results = $elasticSearch->search('App\\Models\\Product', $query, [
     'boost_mode' => 'multiply',  // Режим применения boost
     'score_mode' => 'sum',       // Режим подсчета скора
 ]);
-```
-
-## Логирование
-
-Включите логирование для отладки:
-
-```php
-'logging' => [
-    'enabled' => env('ELASTICSEARCH_LOGGING', false),
-    'level' => env('ELASTICSEARCH_LOG_LEVEL', 'info'),
-],
 ```
 
 ## Требования

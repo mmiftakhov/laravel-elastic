@@ -394,6 +394,7 @@ Options:
      * 
      * Собирает все необходимые поля из записи модели
      * включая хранимые поля, поля для поиска и вычисляемые поля
+     * Поддерживает translatable поля (JSON структуры)
      * 
      * @param \Illuminate\Database\Eloquent\Model $record Запись модели
      * @param array $config Конфигурация модели
@@ -417,11 +418,58 @@ Options:
             }
         }
 
+        // Обрабатываем translatable поля
+        $document = $this->processTranslatableFields($record, $document);
+
         // Добавляем вычисляемые поля
         foreach ($config['computed_fields'] ?? [] as $field => $fieldConfig) {
             $document[$field] = $this->computeField($record, $fieldConfig);
         }
 
+        return $document;
+    }
+
+    /**
+     * Обрабатывает translatable поля из JSON структуры
+     * 
+     * Извлекает значения для каждого языка из translatable полей
+     * и добавляет их как отдельные поля в документ
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param array $document Текущий документ
+     * @return array Обновленный документ с языковыми полями
+     */
+    protected function processTranslatableFields($record, array $document): array
+    {
+        // Список translatable полей
+        $translatableFields = ['title', 'slug', 'short_description', 'specification'];
+        
+        foreach ($translatableFields as $field) {
+            if (array_key_exists($field, $record->getAttributes())) {
+                $translatableValue = $record->getAttribute($field);
+                
+                // Если поле содержит JSON (translatable)
+                if (is_array($translatableValue) || is_object($translatableValue)) {
+                    $translatableArray = is_object($translatableValue) ? (array) $translatableValue : $translatableValue;
+                    
+                    // Добавляем основное поле (используем английский как fallback)
+                    $document[$field] = $translatableArray['en'] ?? $translatableArray['lv'] ?? '';
+                    
+                    // Добавляем языковые версии
+                    if (isset($translatableArray['en'])) {
+                        $document[$field . '_en'] = $translatableArray['en'];
+                    }
+                    
+                    if (isset($translatableArray['lv'])) {
+                        $document[$field . '_lv'] = $translatableArray['lv'];
+                    }
+                } else {
+                    // Если поле не translatable, оставляем как есть
+                    $document[$field] = $translatableValue;
+                }
+            }
+        }
+        
         return $document;
     }
 

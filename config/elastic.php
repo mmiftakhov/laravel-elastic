@@ -47,27 +47,8 @@ return [
     |
     */
     'connection' => [
-        // Таймаут для выполнения запросов (в секундах)
-        'timeout' => env('ELASTICSEARCH_TIMEOUT', 30),
-        
-        // Таймаут для установки соединения (в секундах)
-        'connect_timeout' => env('ELASTICSEARCH_CONNECT_TIMEOUT', 10),
-        
         // Количество попыток повторного подключения при ошибках
         'retries' => env('ELASTICSEARCH_RETRIES', 3),
-        
-        // Настройки SSL/TLS (для Elasticsearch 8.x с включенной безопасностью)
-        'ssl' => [
-            'verify' => env('ELASTICSEARCH_SSL_VERIFY', true),
-            'cert' => env('ELASTICSEARCH_SSL_CERT', null),
-            'key' => env('ELASTICSEARCH_SSL_KEY', null),
-            'ca' => env('ELASTICSEARCH_SSL_CA', null),
-        ],
-        
-        // Настройки аутентификации
-        'headers' => [
-            'Authorization' => env('ELASTICSEARCH_AUTH_HEADER', null),
-        ],
     ],
 
     /*
@@ -95,42 +76,6 @@ return [
         // Количество реплик (копий) каждого шарда
         // 0 = без реплик (только для разработки), 1+ = для продакшена
         'number_of_replicas' => env('ELASTICSEARCH_NUMBER_OF_REPLICAS', 0),
-        
-        // Настройки для zero-downtime reindexing (переиндексация без простоя)
-        // Позволяет создавать новые версии индексов с алиасами
-        'versioning' => [
-            'enabled' => env('ELASTICSEARCH_VERSIONING_ENABLED', true),
-            'alias_suffix' => '_current',           // Суффикс для алиаса текущей версии
-            'version_format' => 'v{number}',        // Формат версии: v1, v2, v3...
-            'keep_old_versions' => 2,               // Количество старых версий для хранения
-        ],
-        
-        // Настройки для автоматического обновления маппинга
-        'mapping' => [
-            'dynamic' => 'strict',                  // Строгий режим: новые поля отклоняются
-            'date_detection' => false,              // Отключить автоопределение дат
-            'numeric_detection' => false,           // Отключить автоопределение чисел
-        ],
-        
-        // Настройки для оптимизации производительности
-        // ⚠️ ВНИМАНИЕ: Эти настройки влияют на производительность и использование ресурсов
-        'performance' => [
-            // Интервал обновления индекса (refresh_interval)
-            // - '1s' = обновление каждую секунду (быстрый поиск, но больше нагрузки)
-            // - '30s' = обновление каждые 30 секунд (медленнее, но меньше нагрузки)
-            // - '-1' = отключить автоматическое обновление (только ручное)
-            'refresh_interval' => env('ELASTICSEARCH_REFRESH_INTERVAL', '1s'),
-            
-            // Максимальное количество результатов для поиска
-            // Влияет на память и производительность при глубокой пагинации
-            // Рекомендуется: 1000-10000 для типовых проектов
-            'max_result_window' => env('ELASTICSEARCH_MAX_RESULT_WINDOW', 10000),
-            
-            // Максимальная разница для n-грамм (влияет на размер индекса)
-            // Используется только для автодополнения и частичного поиска
-            // Рекомендуется: 20-50 для типовых проектов
-            'max_ngram_diff' => env('ELASTICSEARCH_MAX_NGRAM_DIFF', 20),
-        ],
     ],
 
     /*
@@ -156,29 +101,30 @@ return [
     'analysis' => [
         // Анализаторы - определяют полный процесс обработки текста
         // ⚠️ ВНИМАНИЕ: Каждый анализатор увеличивает размер индекса и время индексации
-        // Для типовых проектов достаточно 3-5 основных анализаторов
         'analyzer' => [
-            // Стандартный анализатор для английского языка
-            // Используется по умолчанию, если не указан другой
-            'standard' => [
-                'type' => 'standard',
-                'stopwords' => '_english_',         // Встроенный список английских стоп-слов
-            ],
-            
-            // Кастомный анализатор для русского языка
-            // ОБЯЗАТЕЛЬНО для проектов с русским контентом
-            'russian' => [
+            // Анализатор для английского языка
+            'english' => [
                 'type' => 'custom',
                 'tokenizer' => 'standard',          // Разбивает по пробелам и знакам препинания
                 'filter' => [
                     'lowercase',                    // Приводит к нижнему регистру
-                    'russian_stop',                 // Удаляет русские стоп-слова
-                    'russian_stemmer',              // Приводит к основе слова (стемминг)
+                    'english_stop',                 // Удаляет английские стоп-слова
+                    'english_stemmer',              // Приводит к основе слова (стемминг)
+                ],
+            ],
+            
+            // Анализатор для латышского языка
+            'latvian' => [
+                'type' => 'custom',
+                'tokenizer' => 'standard',          // Разбивает по пробелам и знакам препинания
+                'filter' => [
+                    'lowercase',                    // Приводит к нижнему регистру
+                    'latvian_stop',                 // Удаляет латышские стоп-слова
+                    'latvian_stemmer',              // Приводит к основе слова (стемминг)
                 ],
             ],
             
             // Анализатор для автодополнения
-            // ОБЯЗАТЕЛЬНО для проектов с автодополнением
             'autocomplete' => [
                 'type' => 'custom',
                 'tokenizer' => 'autocomplete_tokenizer',  // Специальный токенизатор
@@ -189,7 +135,6 @@ return [
             ],
             
             // Анализатор для поиска по точному совпадению
-            // РЕКОМЕНДУЕТСЯ для поиска по SKU, кодам, точным названиям
             'exact_match' => [
                 'type' => 'custom',
                 'tokenizer' => 'keyword',           // Обрабатывает весь текст как один токен
@@ -197,55 +142,18 @@ return [
             ],
             
             // Анализатор для поиска по всему тексту (multi-field)
-            // ОПЦИОНАЛЬНО: объединяет возможности всех языков
-            // Увеличивает размер индекса, но улучшает качество поиска
             'full_text' => [
                 'type' => 'custom',
                 'tokenizer' => 'standard',
                 'filter' => [
                     'lowercase',                    // Приводит к нижнему регистру
-                    'russian_stop',                 // Удаляет русские стоп-слова
                     'english_stop',                 // Удаляет английские стоп-слова
-                    'russian_stemmer',              // Стемминг для русского
+                    'latvian_stop',                 // Удаляет латышские стоп-слова
                     'english_stemmer',              // Стемминг для английского
+                    'latvian_stemmer',              // Стемминг для латышского
                     'unique',                       // Удаляет дубликаты токенов
                 ],
             ],
-            
-            // ДОПОЛНИТЕЛЬНЫЕ АНАЛИЗАТОРЫ (раскомментировать при необходимости)
-            
-            // Анализатор для английского языка (если нужен отдельно от русского)
-            // 'english' => [
-            //     'type' => 'custom',
-            //     'tokenizer' => 'standard',
-            //     'filter' => [
-            //         'lowercase',
-            //         'english_stop',
-            //         'english_stemmer',
-            //         'english_possessive_stemmer',
-            //     ],
-            // ],
-            
-            // Анализатор для латышского языка (если нужен)
-            // 'latvian' => [
-            //     'type' => 'custom',
-            //     'tokenizer' => 'standard',
-            //     'filter' => [
-            //         'lowercase',
-            //         'latvian_stop',
-            //         'latvian_stemmer',
-            //     ],
-            // ],
-            
-            // Анализатор для частичного совпадения (если нужен)
-            // 'partial_match' => [
-            //     'type' => 'custom',
-            //     'tokenizer' => 'standard',
-            //     'filter' => [
-            //         'lowercase',
-            //         'edge_ngram',
-            //     ],
-            // ],
         ],
         
         // Токенизаторы - разбивают текст на токены (слова)
@@ -271,20 +179,8 @@ return [
         ],
         
         // Фильтры - применяют преобразования к токенам
-        // ⚠️ ВНИМАНИЕ: Каждый фильтр увеличивает время обработки
         'filter' => [
-            // ОБЯЗАТЕЛЬНЫЕ ФИЛЬТРЫ для русского языка
-            'russian_stop' => [
-                'type' => 'stop',
-                'stopwords' => '_russian_',         // Встроенный список русских стоп-слов
-            ],
-            
-            'russian_stemmer' => [
-                'type' => 'stemmer',
-                'language' => 'russian',
-            ],
-            
-            // ОБЯЗАТЕЛЬНЫЕ ФИЛЬТРЫ для английского языка
+            // ФИЛЬТРЫ для английского языка
             'english_stop' => [
                 'type' => 'stop',
                 'stopwords' => '_english_',         // Встроенный список английских стоп-слов
@@ -295,80 +191,33 @@ return [
                 'language' => 'english',
             ],
             
-            // ОБЯЗАТЕЛЬНЫЕ ФИЛЬТРЫ для автодополнения
+            // ФИЛЬТРЫ для латышского языка
+            'latvian_stop' => [
+                'type' => 'stop',
+                'stopwords' => '_latvian_',         // Встроенный список латышских стоп-слов
+            ],
+            
+            'latvian_stemmer' => [
+                'type' => 'stemmer',
+                'language' => 'latvian',
+            ],
+            
+            // ФИЛЬТРЫ для автодополнения
             'autocomplete_filter' => [
                 'type' => 'edge_ngram',
                 'min_gram' => 1,                    // Минимальная длина
                 'max_gram' => 20,                   // Максимальная длина
             ],
             
-            // ОБЯЗАТЕЛЬНЫЙ ФИЛЬТР для удаления дубликатов
+            // ФИЛЬТР для удаления дубликатов
             'unique' => [
                 'type' => 'unique',
                 'only_on_same_position' => true,    // Только в одной позиции
             ],
-            
-            // ДОПОЛНИТЕЛЬНЫЕ ФИЛЬТРЫ (раскомментировать при необходимости)
-            
-            // Стеммер для притяжательных форм в английском
-            // 'english_possessive_stemmer' => [
-            //     'type' => 'stemmer',
-            //     'language' => 'possessive_english',
-            // ],
-            
-            // Фильтр для создания n-грамм (для автодополнения)
-            // 'edge_ngram' => [
-            //     'type' => 'edge_ngram',
-            //     'min_gram' => 2,                    // Минимальная длина
-            //     'max_gram' => 20,                   // Максимальная длина
-            // ],
-            
-            // Фильтр для нормализации текста
-            // 'word_delimiter' => [
-            //     'type' => 'word_delimiter',
-            //     'generate_word_parts' => true,      // Генерировать части слов
-            //     'generate_number_parts' => true,    // Генерировать части чисел
-            //     'catenate_words' => true,           // Объединять слова
-            //     'catenate_numbers' => true,         // Объединять числа
-            //     'catenate_all' => false,            // Не объединять все
-            //     'split_on_case_change' => true,     // Разбивать при смене регистра
-            //     'preserve_original' => false,       // Не сохранять оригинал
-            //     'split_on_numerics' => true,        // Разбивать при цифрах
-            //     'stem_english_possessive' => true,  // Обрабатывать притяжательные
-            // ],
-            
-            // Фильтр для синонимов (можно настроить кастомные синонимы)
-            // 'synonym_filter' => [
-            //     'type' => 'synonym',
-            //     'synonyms' => [
-            //         'iphone, apple phone',
-            //         'android, google phone',
-            //         'laptop, notebook, portable computer',
-            //     ],
-            //     'ignore_case' => true,              // Игнорировать регистр
-            // ],
-            
-            // Фильтр для удаления акцентов
-            // 'asciifolding' => [
-            //     'type' => 'asciifolding',
-            //     'preserve_original' => false,       // Не сохранять оригинал
-            // ],
         ],
         
         // Кастомные стоп-слова (можно переопределить встроенные)
-        // Дополнительные слова для удаления при анализе
         'stopwords' => [
-            // Русские стоп-слова (дополнительные к встроенным)
-            'russian_custom' => [
-                'этот', 'эта', 'это', 'эти',
-                'тот', 'та', 'то', 'те',
-                'какой', 'какая', 'какое', 'какие',
-                'который', 'которая', 'которое', 'которые',
-                'наш', 'наша', 'наше', 'наши',
-                'ваш', 'ваша', 'ваше', 'ваши',
-                'их', 'его', 'ее', 'их',
-            ],
-            
             // Английские стоп-слова (дополнительные к встроенным)
             'english_custom' => [
                 'this', 'that', 'these', 'those',
@@ -444,7 +293,7 @@ return [
         // Настройки для поиска по частичному совпадению
         // Средний приоритет для частичных совпадений
         'partial_match' => [
-            'analyzer' => 'partial_match',         // Анализатор для частичного совпадения
+            'analyzer' => 'autocomplete',          // Используем autocomplete анализатор
             'type' => 'best_fields',               // Тип запроса - лучшие поля
         ],
         
@@ -452,7 +301,11 @@ return [
         // Универсальный поиск по всем текстовым полям
         'full_text' => [
             'analyzer' => 'full_text',             // Анализатор для всего текста
-            'fields' => ['name', 'description'],   // Поля для поиска по всему тексту
+            'fields' => [
+                'title', 'title_en', 'title_lv',
+                'short_description', 'short_description_en', 'short_description_lv',
+                'specification', 'specification_en', 'specification_lv'
+            ],   // Поля для поиска по всему тексту
             'type' => 'most_fields',               // Тип запроса - большинство полей
         ],
         
@@ -549,20 +402,16 @@ return [
             // Поля для поиска - определяют как индексировать данные для поиска
             // Каждое поле может иметь свой тип, анализатор и настройки
             'searchable_fields' => [
-                // Основное поле названия с multi-field mapping
-                'name' => [
+                // Translatable поля - извлекаются из JSON структуры
+                // Поле заголовка (translatable)
+                'title' => [
                     'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'russian',                   // Анализатор для русского языка
+                    'analyzer' => 'english',                   // Анализатор для английского языка
                     'fields' => [
                         // Подполе для точного совпадения
                         'exact' => [
                             'type' => 'text',
                             'analyzer' => 'exact_match',       // Анализатор точного совпадения
-                        ],
-                        // Подполе для частичного совпадения
-                        'partial' => [
-                            'type' => 'text',
-                            'analyzer' => 'partial_match',     // Анализатор частичного совпадения
                         ],
                         // Подполе для автодополнения
                         'autocomplete' => [
@@ -572,56 +421,83 @@ return [
                     ],
                 ],
                 
-                // Поле описания
-                'description' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'russian',                   // Анализатор для русского языка
-                ],
-                
-                // Поле категории (ключевое слово)
-                'category' => [
-                    'type' => 'keyword',                       // Тип поля - ключевое слово
-                ],
-                
-                // Поле бренда (ключевое слово)
-                'brand' => [
-                    'type' => 'keyword',                       // Тип поля - ключевое слово
-                ],
-                
-                // Поле тегов (массив ключевых слов)
-                'tags' => [
-                    'type' => 'keyword',                       // Тип поля - ключевое слово
-                ],
-                
-                // Поле SKU (артикул)
-                'sku' => [
+                // Поле slug (translatable)
+                'slug' => [
                     'type' => 'text',                          // Тип поля - текстовый
                     'analyzer' => 'exact_match',               // Анализатор точного совпадения
                 ],
                 
-                // Поле для поисковых предложений
-                'search_suggestions' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'autocomplete',              // Анализатор автодополнения
-                ],
-                
-                // Многоязычные поля - для поддержки нескольких языков
-                'name_en' => [
+                // Поле краткого описания (translatable)
+                'short_description' => [
                     'type' => 'text',                          // Тип поля - текстовый
                     'analyzer' => 'english',                   // Анализатор для английского языка
                 ],
                 
-                'description_en' => [
+                // Поле спецификации (translatable)
+                'specification' => [
                     'type' => 'text',                          // Тип поля - текстовый
                     'analyzer' => 'english',                   // Анализатор для английского языка
                 ],
                 
-                'name_lv' => [
+                // Языковые версии полей (извлекаются из translatable JSON)
+                // Английский язык
+                'title_en' => [
+                    'type' => 'text',                          // Тип поля - текстовый
+                    'analyzer' => 'english',                   // Анализатор для английского языка
+                    'fields' => [
+                        'exact' => [
+                            'type' => 'text',
+                            'analyzer' => 'exact_match',
+                        ],
+                        'autocomplete' => [
+                            'type' => 'text',
+                            'analyzer' => 'autocomplete',
+                        ],
+                    ],
+                ],
+                
+                'slug_en' => [
+                    'type' => 'text',                          // Тип поля - текстовый
+                    'analyzer' => 'exact_match',               // Анализатор точного совпадения
+                ],
+                
+                'short_description_en' => [
+                    'type' => 'text',                          // Тип поля - текстовый
+                    'analyzer' => 'english',                   // Анализатор для английского языка
+                ],
+                
+                'specification_en' => [
+                    'type' => 'text',                          // Тип поля - текстовый
+                    'analyzer' => 'english',                   // Анализатор для английского языка
+                ],
+                
+                // Латышский язык
+                'title_lv' => [
+                    'type' => 'text',                          // Тип поля - текстовый
+                    'analyzer' => 'latvian',                   // Анализатор для латышского языка
+                    'fields' => [
+                        'exact' => [
+                            'type' => 'text',
+                            'analyzer' => 'exact_match',
+                        ],
+                        'autocomplete' => [
+                            'type' => 'text',
+                            'analyzer' => 'autocomplete',
+                        ],
+                    ],
+                ],
+                
+                'slug_lv' => [
+                    'type' => 'text',                          // Тип поля - текстовый
+                    'analyzer' => 'exact_match',               // Анализатор точного совпадения
+                ],
+                
+                'short_description_lv' => [
                     'type' => 'text',                          // Тип поля - текстовый
                     'analyzer' => 'latvian',                   // Анализатор для латышского языка
                 ],
                 
-                'description_lv' => [
+                'specification_lv' => [
                     'type' => 'text',                          // Тип поля - текстовый
                     'analyzer' => 'latvian',                   // Анализатор для латышского языка
                 ],
@@ -631,12 +507,18 @@ return [
             // Эти поля не участвуют в поиске, но доступны в результатах
             'stored_fields' => [
                 'id',                           // ID записи
-                'name',                         // Название
-                'name_en',                      // Название на английском
-                'name_lv',                      // Название на латышском
-                'price',                        // Цена
-                'category',                     // Категория
-                'brand',                        // Бренд
+                'title',                        // Заголовок (translatable)
+                'title_en',                     // Заголовок на английском
+                'title_lv',                     // Заголовок на латышском
+                'slug',                         // Slug (translatable)
+                'slug_en',                      // Slug на английском
+                'slug_lv',                      // Slug на латышском
+                'short_description',            // Краткое описание (translatable)
+                'short_description_en',         // Краткое описание на английском
+                'short_description_lv',         // Краткое описание на латышском
+                'specification',                // Спецификация (translatable)
+                'specification_en',             // Спецификация на английском
+                'specification_lv',             // Спецификация на латышском
                 'is_active',                    // Статус активности
                 'created_at',                   // Дата создания
                 'updated_at',                   // Дата обновления
@@ -655,43 +537,33 @@ return [
             // Вычисляемые поля - создаются на основе других полей
             // Могут объединять несколько полей или применять трансформации
             'computed_fields' => [
-                // Поле для поиска по всему тексту
+                // Поле для поиска по всему тексту (все translatable поля)
                 'search_text' => [
                     'type' => 'text',                          // Тип поля - текстовый
                     'analyzer' => 'full_text',                 // Анализатор для всего текста
-                    'source' => ['name', 'description', 'category', 'brand', 'tags'], // Источники данных
+                    'source' => [
+                        'title', 'title_en', 'title_lv',
+                        'short_description', 'short_description_en', 'short_description_lv',
+                        'specification', 'specification_en', 'specification_lv'
+                    ], // Источники данных
                 ],
                 
-                // Поле для группировки по ценовым диапазонам
-                'price_range' => [
-                    'type' => 'keyword',                       // Тип поля - ключевое слово
-                    'source' => 'price',                       // Источник данных
-                    'transform' => 'price_range',              // Трансформация
+                // Поле для поиска по заголовкам (все языки)
+                'title_search' => [
+                    'type' => 'text',                          // Тип поля - текстовый
+                    'analyzer' => 'full_text',                 // Анализатор для всего текста
+                    'source' => ['title', 'title_en', 'title_lv'], // Источники данных
                 ],
                 
-                // Поле для расчета популярности
-                'popularity_score' => [
-                    'type' => 'float',                         // Тип поля - число с плавающей точкой
-                    'source' => ['views_count', 'sales_count', 'rating'], // Источники данных
-                    'transform' => 'popularity_score',         // Трансформация
+                // Поле для поиска по описаниям (все языки)
+                'description_search' => [
+                    'type' => 'text',                          // Тип поля - текстовый
+                    'analyzer' => 'full_text',                 // Анализатор для всего текста
+                    'source' => [
+                        'short_description', 'short_description_en', 'short_description_lv',
+                        'specification', 'specification_en', 'specification_lv'
+                    ], // Источники данных
                 ],
-                
-                // Поле для статуса доступности
-                'availability_status' => [
-                    'type' => 'keyword',                       // Тип поля - ключевое слово
-                    'source' => ['stock_quantity', 'is_active'], // Источники данных
-                    'transform' => 'availability_status',      // Трансформация
-                ],
-            ],
-            
-            // Настройки запросов для этой модели
-            // Переопределяют глобальные настройки поиска
-            'query' => [
-                'default_operator' => 'OR',                    // Оператор по умолчанию
-                'fuzziness' => 'AUTO',                         // Уровень нечеткости
-                'minimum_should_match' => '75%',               // Минимальное совпадение
-                'boost_mode' => 'multiply',                    // Режим буста
-                'score_mode' => 'sum',                         // Режим подсчета скора
             ],
             
             // ⚠️ ВАЖНО: Boost (приоритет полей) должен применяться только в поисковых запросах,
@@ -705,12 +577,9 @@ return [
             // Влияет на производительность и использование памяти
             'chunk_size' => 1000,
             
-            // Использовать мягкое удаление для этой модели
-            // Влияет на обработку удаленных записей
-            'soft_deletes' => true,
-            
             // Условия запросов для фильтрации записей перед индексацией
             // Позволяют индексировать только нужные записи
+            /*
             'query_conditions' => [
                 // Базовые условия WHERE для всех запросов
                 // Поддерживаются: обычные значения, 'null', 'not_null'
@@ -752,6 +621,7 @@ return [
                           ->where('expires_at', '>', now());   // Не истекшие
                 },
             ],
+            */
             
             // Кастомные настройки индекса для этой конкретной модели (опционально)
             // Переопределяют глобальные настройки индекса
@@ -759,129 +629,6 @@ return [
                 // Можно добавить кастомные настройки для индекса
                 // Например, специальные анализаторы или фильтры
             ],
-        ],
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Logging Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Настройки логирования для операций Elasticsearch 8.18.
-    | Позволяет отслеживать запросы, ответы и ошибки для отладки
-    | и мониторинга производительности.
-    |
-    | Документация:
-    | - https://www.elastic.co/guide/en/elasticsearch/client/php-api/8.18/logging.html
-    | - https://www.elastic.co/guide/en/elasticsearch/reference/8.18/logging.html
-    |
-    */
-    'logging' => [
-        // Включить логирование операций Elasticsearch
-        'enabled' => env('ELASTICSEARCH_LOGGING', false),
-        
-        // Уровень логирования (debug, info, warning, error)
-        'level' => env('ELASTICSEARCH_LOG_LEVEL', 'info'),
-        
-        // Настройки для детального логирования
-        'detailed' => [
-            'enabled' => env('ELASTICSEARCH_DETAILED_LOGGING', false), // Детальное логирование
-            'log_requests' => true,                // Логировать запросы
-            'log_responses' => true,               // Логировать ответы
-            'log_errors' => true,                  // Логировать ошибки
-            'log_performance' => true,             // Логировать производительность
-        ],
-        
-        // Настройки для мониторинга производительности
-        'performance' => [
-            'enabled' => env('ELASTICSEARCH_PERFORMANCE_LOGGING', false), // Логирование производительности
-            'slow_query_threshold' => 1000,        // Порог медленных запросов (мс)
-            'log_slow_queries' => true,            // Логировать медленные запросы
-            'log_bulk_operations' => true,         // Логировать bulk операции
-        ],
-        
-        // Настройки для отладки
-        'debug' => [
-            'enabled' => env('ELASTICSEARCH_DEBUG_LOGGING', false), // Отладочное логирование
-            'log_curl_commands' => false,          // Логировать cURL команды
-            'log_request_body' => false,           // Логировать тело запроса
-            'log_response_body' => false,          // Логировать тело ответа
-        ],
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Monitoring Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Настройки мониторинга для Elasticsearch 8.18.
-    | Позволяет отслеживать состояние кластера и производительность.
-    |
-    */
-    'monitoring' => [
-        // Включить мониторинг кластера
-        'enabled' => env('ELASTICSEARCH_MONITORING', false),
-        
-        // Настройки для проверки здоровья кластера
-        'health_check' => [
-            'enabled' => true,                     // Включить проверку здоровья
-            'interval' => 300,                     // Интервал проверки (секунды)
-            'timeout' => 10,                       // Таймаут проверки (секунды)
-        ],
-        
-        // Настройки для мониторинга индексов
-        'indices' => [
-            'enabled' => true,                     // Включить мониторинг индексов
-            'check_size' => true,                  // Проверять размер индексов
-            'check_health' => true,                // Проверять здоровье индексов
-            'alert_threshold' => 0.9,              // Порог для алертов (90% использования)
-        ],
-        
-        // Настройки для алертов
-        'alerts' => [
-            'enabled' => env('ELASTICSEARCH_ALERTS', false), // Включить алерты
-            'email' => env('ELASTICSEARCH_ALERT_EMAIL', null), // Email для алертов
-            'webhook' => env('ELASTICSEARCH_ALERT_WEBHOOK', null), // Webhook для алертов
-        ],
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Security Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Настройки безопасности для Elasticsearch 8.18.
-    | Включает аутентификацию, авторизацию и шифрование.
-    |
-    | Документация:
-    | - https://www.elastic.co/guide/en/elasticsearch/reference/8.18/security-settings.html
-    | - https://www.elastic.co/guide/en/elasticsearch/reference/8.18/security-api.html
-    |
-    */
-    'security' => [
-        // Настройки аутентификации
-        'authentication' => [
-            'enabled' => env('ELASTICSEARCH_AUTH_ENABLED', false), // Включить аутентификацию
-            'type' => env('ELASTICSEARCH_AUTH_TYPE', 'basic'),     // Тип аутентификации
-            'username' => env('ELASTICSEARCH_USERNAME', null),      // Имя пользователя
-            'password' => env('ELASTICSEARCH_PASSWORD', null),      // Пароль
-            'api_key' => env('ELASTICSEARCH_API_KEY', null),       // API ключ
-        ],
-        
-        // Настройки SSL/TLS
-        'ssl' => [
-            'enabled' => env('ELASTICSEARCH_SSL_ENABLED', false),  // Включить SSL/TLS
-            'verify' => env('ELASTICSEARCH_SSL_VERIFY', true),     // Проверять сертификат
-            'cert' => env('ELASTICSEARCH_SSL_CERT', null),         // Путь к сертификату
-            'key' => env('ELASTICSEARCH_SSL_KEY', null),           // Путь к приватному ключу
-            'ca' => env('ELASTICSEARCH_SSL_CA', null),             // Путь к CA сертификату
-        ],
-        
-        // Настройки авторизации
-        'authorization' => [
-            'enabled' => env('ELASTICSEARCH_AUTHZ_ENABLED', false), // Включить авторизацию
-            'roles' => env('ELASTICSEARCH_ROLES', []),              // Роли пользователя
-            'permissions' => env('ELASTICSEARCH_PERMISSIONS', []),  // Разрешения
         ],
     ],
 ]; 

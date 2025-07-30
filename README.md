@@ -34,12 +34,25 @@ php artisan vendor:publish --provider="Maratmiftahov\LaravelElastic\ElasticServi
 
 Добавьте модели в секцию `models`:
 
+#### Типы полей
+
+- **`searchable_fields`** - поля для индексации и поиска
+  - Эти поля индексируются в Elasticsearch и участвуют в поиске
+  - Определяют маппинг полей в индексе
+  - Используются при индексировании для создания структуры данных
+
+- **`return_fields`** - поля для возврата из базы данных
+  - Определяет, какие поля и отношения загружать из БД после поиска
+  - Поддерживает вложенные отношения: `'relation' => ['поле', 'вложенное_отношение' => ['поле']]`
+  - Результаты сохраняют порядок сортировки из Elasticsearch
+  - Оптимизированные запросы с выборкой только нужных полей
+
 ```php
 'models' => [
     'App\\Models\\Product' => [
         'index' => 'products',
         
-        // Поля для поиска
+        // Поля для поиска - определяют маппинг в Elasticsearch и индексируются
         'searchable_fields' => [
             'name' => [
                 'type' => 'text',
@@ -69,14 +82,12 @@ php artisan vendor:publish --provider="Maratmiftahov\LaravelElastic\ElasticServi
             ],
         ],
         
-        // Поля для хранения
-        'stored_fields' => [
-            'id', 'name', 'price', 'category', 'is_active',
-        ],
-        
-        // Отношения для загрузки
-        'relations' => [
-            'images', 'specifications', 'category',
+        // Поля для возврата из базы данных после поиска
+        'return_fields' => [
+            'id', 'name', 'description', 'price', 'is_active',
+            'category' => ['id', 'name', 'slug'],
+            'brand' => ['id', 'name', 'logo'],
+            'images' => ['id', 'url', 'alt'],
         ],
         
         // Вычисляемые поля
@@ -107,6 +118,30 @@ php artisan vendor:publish --provider="Maratmiftahov\LaravelElastic\ElasticServi
         'chunk_size' => 1000,
     ],
 ],
+```
+
+### Пример использования return_fields
+
+```php
+// Конфигурация с вложенными отношениями
+'return_fields' => [
+    'id', 'title', 'description', 'price',
+    'category' => [
+        'id', 'name', 'slug',
+        'parent' => ['id', 'name']  // Вложенное отношение
+    ],
+    'brand' => ['id', 'name', 'logo'],
+    'images' => ['id', 'url', 'alt'],
+    'specifications' => [
+        'id', 'name', 'value',
+        'specification_type' => ['id', 'name']
+    ],
+],
+
+// Результат поиска будет содержать:
+// - Данные из Elasticsearch (скор, подсветка)
+// - Данные из БД с указанными полями и отношениями
+// - Сохраненный порядок сортировки из Elasticsearch
 ```
 
 ## Команды

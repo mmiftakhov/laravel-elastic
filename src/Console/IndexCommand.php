@@ -404,21 +404,15 @@ Options:
     {
         $document = [];
 
-        // Добавляем хранимые поля (возвращаются напрямую из Elasticsearch)
-        foreach ($config['stored_fields'] ?? [] as $field) {
-            if (array_key_exists($field, $record->getAttributes())) {
-                $document[$field] = $record->getAttribute($field);
-            }
-        }
-
-        // Добавляем поля для поиска
+        // При индексировании используем searchable_fields для определения полей
+        // searchable_fields определяют маппинг и индексацию данных
         foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
             if (array_key_exists($field, $record->getAttributes())) {
                 $document[$field] = $record->getAttribute($field);
             }
         }
-
-        // Обрабатываем translatable поля
+        
+        // Обрабатываем translatable поля (перезаписывают обычные поля)
         $document = $this->processTranslatableFields($record, $document, $config);
 
         // Добавляем вычисляемые поля
@@ -449,38 +443,30 @@ Options:
         $translatableFields = $this->getTranslatableFields($record, $translatableConfig);
         
         foreach ($translatableFields as $field) {
-            if (array_key_exists($field, $record->getAttributes())) {
-                $translatableValue = $record->getAttribute($field);
+            // Проверяем, является ли поле translatable, используя getRawOriginal()
+            if ($this->isTranslatableField($record, $field, $translatableConfig)) {
+                // Получаем оригинальное значение и декодируем JSON
+                $originalValue = $record->getRawOriginal($field);
+                $translatableArray = json_decode($originalValue, true);
                 
-                // Проверяем, является ли поле translatable, используя getRawOriginal()
-                if ($this->isTranslatableField($record, $field, $translatableConfig)) {
-                    // Получаем оригинальное значение и декодируем JSON
-                    $originalValue = $record->getRawOriginal($field);
-                    $translatableArray = json_decode($originalValue, true);
+                // Проверяем, что декодирование прошло успешно и это массив
+                if (is_array($translatableArray)) {
+                    // Добавляем основное поле (используем fallback язык)
+                    $fallbackLocale = $translatableConfig['fallback_locale'];
+                    $document[$field] = $translatableArray[$fallbackLocale] ?? $this->getFirstAvailableValue($translatableArray, $translatableConfig['locales']);
                     
-                    // Проверяем, что декодирование прошло успешно и это массив
-                    if (is_array($translatableArray)) {
-                        // Добавляем основное поле (используем fallback язык)
-                        $fallbackLocale = $translatableConfig['fallback_locale'];
-                        $document[$field] = $translatableArray[$fallbackLocale] ?? $this->getFirstAvailableValue($translatableArray, $translatableConfig['locales']);
-                        
-                        // Добавляем языковые версии, если включено в конфигурации
-                        if ($translatableConfig['index_localized_fields']) {
-                            foreach ($translatableConfig['locales'] as $locale) {
-                                if (isset($translatableArray[$locale])) {
-                                    $document[$field . '_' . $locale] = $translatableArray[$locale];
-                                }
+                    // Добавляем языковые версии, если включено в конфигурации
+                    if ($translatableConfig['index_localized_fields']) {
+                        foreach ($translatableConfig['locales'] as $locale) {
+                            if (isset($translatableArray[$locale])) {
+                                $document[$field . '_' . $locale] = $translatableArray[$locale];
                             }
                         }
-                    } else {
-                        // Если декодирование не удалось, используем значение как есть
-                        $document[$field] = $translatableValue;
                     }
-                } else {
-                    // Если поле не translatable, оставляем как есть
-                    $document[$field] = $translatableValue;
                 }
+                // Если декодирование не удалось, оставляем значение как есть (уже добавлено выше)
             }
+            // Если поле не translatable, оставляем значение как есть (уже добавлено выше)
         }
         
         return $document;

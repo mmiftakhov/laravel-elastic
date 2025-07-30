@@ -460,34 +460,44 @@ class ElasticSearch
         // Строим запрос с учетом return_fields
         $query = $modelClass::query();
         
-        // Добавляем поля для выборки
-        $selectFields = [];
+        // Разделяем поля на основные и отношения
+        $mainFields = [];
         $relations = [];
         
         foreach ($returnFields as $key => $value) {
             if (is_string($value)) {
-                // Обычное поле
-                $selectFields[] = $value;
+                // Обычное поле основной модели
+                $mainFields[] = $value;
             } elseif (is_array($value)) {
                 // Отношение
                 $relations[$key] = $this->buildRelationQuery($value);
             }
         }
         
-        if (!empty($selectFields)) {
+        // Всегда делаем select для основных полей, но если есть relations,
+        // добавляем в select все foreign keys, необходимые для загрузки relations
+        if (!empty($mainFields)) {
+            $selectFields = $mainFields;
+            
+            // Если есть relations, добавляем foreign keys
+            if (!empty($relations)) {
+                $foreignKeys = $this->getForeignKeysForRelations($modelClass, array_keys($relations));
+                $selectFields = array_merge($selectFields, $foreignKeys);
+            }
+            
             $query->select($selectFields);
         }
         
-        // Добавляем отношения
+        // Добавляем отношения с их собственными select
         foreach ($relations as $relation => $relationConfig) {
             $query->with([$relation => function ($query) use ($relationConfig) {
-                if (isset($relationConfig['select'])) {
+                if (isset($relationConfig['select']) && !empty($relationConfig['select'])) {
                     $query->select($relationConfig['select']);
                 }
                 if (isset($relationConfig['with'])) {
                     foreach ($relationConfig['with'] as $nestedRelation => $nestedConfig) {
                         $query->with([$nestedRelation => function ($nestedQuery) use ($nestedConfig) {
-                            if (isset($nestedConfig['select'])) {
+                            if (isset($nestedConfig['select']) && !empty($nestedConfig['select'])) {
                                 $nestedQuery->select($nestedConfig['select']);
                             }
                         }]);
@@ -529,7 +539,8 @@ class ElasticSearch
                 $config['select'][] = $value;
             } elseif (is_array($value)) {
                 // Вложенное отношение
-                $config['with'][$key] = $this->buildRelationQuery($value);
+                $nestedConfig = $this->buildRelationQuery($value);
+                $config['with'][$key] = $nestedConfig;
             }
         }
         
@@ -550,6 +561,64 @@ class ElasticSearch
             if ($modelConfig === $config) {
                 return $modelClass;
             }
+        }
+        
+        return null;
+    }
+
+    /**
+     * Получает foreign keys для указанных relations
+     * 
+     * @param string $modelClass Имя класса модели
+     * @param array $relations Массив имен relations
+     * @return array Массив foreign keys
+     */
+    protected function getForeignKeysForRelations(string $modelClass, array $relations): array
+    {
+        $foreignKeys = [];
+        
+        // Создаем экземпляр модели для получения информации о relations
+        $model = new $modelClass();
+        
+        foreach ($relations as $relation) {
+            // Получаем foreign key для relation
+            $foreignKey = $this->getForeignKeyForRelation($model, $relation);
+            if ($foreignKey) {
+                $foreignKeys[] = $foreignKey;
+            }
+        }
+        
+        return array_unique($foreignKeys);
+    }
+
+    /**
+     * Получает foreign key для конкретного relation
+     * 
+     * @param mixed $model Экземпляр модели
+     * @param string $relation Имя relation
+     * @return string|null Foreign key или null
+     */
+    protected function getForeignKeyForRelation($model, string $relation): ?string
+    {
+        // Проверяем, существует ли relation
+        if (!method_exists($model, $relation)) {
+            return null;
+        }
+        
+        // Получаем relation метод
+        $relationMethod = new \ReflectionMethod($model, $relation);
+        $relationInstance = $relationMethod->invoke($model);
+        
+        // Получаем foreign key из relation
+        if ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo) {
+            return $relationInstance->getForeignKeyName();
+        } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\HasOne) {
+            return $relationInstance->getForeignKeyName();
+        } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\HasMany) {
+            return $relationInstance->getForeignKeyName();
+        } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\BelongsToMany) {
+            // Для many-to-many возвращаем pivot table foreign key
+            return $relationInstance->getForeignPivotKeyName();
         }
         
         return null;

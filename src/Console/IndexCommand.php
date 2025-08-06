@@ -330,7 +330,7 @@ Options:
     protected function buildMappingFromSearchableFields(array $searchableFields, array &$properties, array $translatableConfig): void
     {
         foreach ($searchableFields as $field => $fieldConfig) {
-            if (is_string($field) && is_string($fieldConfig)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле (числовой ключ)
                 $this->addFieldToMapping($fieldConfig, $properties, $translatableConfig);
             } elseif (is_string($field) && is_array($fieldConfig)) {
@@ -574,7 +574,7 @@ Options:
     protected function processSearchableFields($record, array $searchableFields, array &$document, array $translatableConfig): void
     {
         foreach ($searchableFields as $field => $fieldConfig) {
-            if (is_string($field) && is_string($fieldConfig)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле (числовой ключ)
                 $this->processSimpleField($record, $fieldConfig, $document, $translatableConfig);
             } elseif (is_string($field) && is_array($fieldConfig)) {

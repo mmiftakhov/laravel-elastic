@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2024-12-19
+
+### Fixed
+- **КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ**: Исправлена логика определения translatable полей в relations
+- Исправлена проверка типов ключей в translatable_fields (is_numeric вместо is_string для числовых ключей)
+- Восстановлена корректная обработка translatable relation полей (category.title_en, category.title_lv)
+- Исправлен метод isFieldInTranslatableList для правильного определения translatable полей
+
 ## [0.2.6] - 2024-12-19
 
 ### Fixed

@@ -455,19 +455,18 @@ Options:
                         }
                     } elseif (is_array($relationFields)) {
                         // Массив полей в relation
-                        foreach ($relationFields as $subField) {
-                            if (is_string($subField)) {
-                                if ($field === $relationField . '.' . $subField) {
+                        foreach ($relationFields as $subFieldKey => $subFieldValue) {
+                            if (is_numeric($subFieldKey) && is_string($subFieldValue)) {
+                                // Простое поле в relation (числовой ключ)
+                                if ($field === $relationField . '.' . $subFieldValue) {
                                     return true;
                                 }
-                            } elseif (is_array($subField)) {
+                            } elseif (is_string($subFieldKey) && is_array($subFieldValue)) {
                                 // Вложенные relations
-                                foreach ($subField as $nestedRelation => $nestedFields) {
-                                    if (is_array($nestedFields)) {
-                                        foreach ($nestedFields as $nestedField) {
-                                            if ($field === $relationField . '.' . $nestedRelation . '.' . $nestedField) {
-                                                return true;
-                                            }
+                                foreach ($subFieldValue as $nestedField) {
+                                    if (is_string($nestedField)) {
+                                        if ($field === $relationField . '.' . $subFieldKey . '.' . $nestedField) {
+                                            return true;
                                         }
                                     }
                                 }

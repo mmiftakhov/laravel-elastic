@@ -380,11 +380,11 @@ Options:
     protected function addRelationFieldsToMapping(string $relationName, array $relationFields, array &$properties, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле в relation
-                $fullField = $relationName . '.' . $field;
+                $fullField = $relationName . '.' . $fieldConfig;
                 $this->addFieldToMapping($fullField, $properties, $translatableConfig);
-            } elseif (is_array($fieldConfig)) {
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Вложенное relation
                 $this->addNestedRelationFieldsToMapping($relationName . '.' . $field, $fieldConfig, $properties, $translatableConfig);
             }
@@ -402,11 +402,11 @@ Options:
     protected function addNestedRelationFieldsToMapping(string $relationPath, array $relationFields, array &$properties, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле во вложенном relation
-                $fullField = $relationPath . '.' . $field;
+                $fullField = $relationPath . '.' . $fieldConfig;
                 $this->addFieldToMapping($fullField, $properties, $translatableConfig);
-            } elseif (is_array($fieldConfig)) {
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Еще более вложенное relation
                 $this->addNestedRelationFieldsToMapping($relationPath . '.' . $field, $fieldConfig, $properties, $translatableConfig);
             }
@@ -623,11 +623,11 @@ Options:
     protected function processSingleRelationFields($relation, string $relationName, array $relationFields, array &$document, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле в relation
-                $fullField = $relationName . '.' . $field;
-                $this->processRelationField($relation, $field, $fullField, $document, $translatableConfig);
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationName . '.' . $fieldConfig;
+                $this->processRelationField($relation, $fieldConfig, $fullField, $document, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Вложенное relation
                 $this->processNestedRelationFields($relation, $relationName . '.' . $field, $fieldConfig, $document, $translatableConfig);
             }
@@ -646,11 +646,11 @@ Options:
     protected function processMultipleRelationFields($relations, string $relationName, array $relationFields, array &$document, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле в коллекции
-                $fullField = $relationName . '.' . $field;
-                $this->processMultipleRelations($relations, $field, $fullField, $document, $translatableConfig);
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationName . '.' . $fieldConfig;
+                $this->processMultipleRelations($relations, $fieldConfig, $fullField, $document, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Вложенное relation в коллекции (берем первый элемент)
                 if ($relations->count() > 0) {
                     $firstRelation = $relations->first();
@@ -672,11 +672,11 @@ Options:
     protected function processNestedRelationFields($relation, string $relationPath, array $relationFields, array &$document, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле во вложенном relation
-                $fullField = $relationPath . '.' . $field;
-                $this->processRelationField($relation, $field, $fullField, $document, $translatableConfig);
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationPath . '.' . $fieldConfig;
+                $this->processRelationField($relation, $fieldConfig, $fullField, $document, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Еще более вложенное relation
                 $this->processNestedRelationFields($relation, $relationPath . '.' . $field, $fieldConfig, $document, $translatableConfig);
             }

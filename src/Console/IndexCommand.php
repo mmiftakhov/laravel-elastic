@@ -517,25 +517,36 @@ Options:
             $fieldName = $fieldParts[1];
             
             $this->line("DEBUG: Checking relation '{$relationName}' for field '{$fieldName}'");
+            $this->line("DEBUG: Full translatableFields structure: " . json_encode($translatableFields, JSON_PRETTY_PRINT));
             
             // Ищем relation в translatable_fields
             foreach ($translatableFields as $key => $translatableField) {
+                $this->line("DEBUG: Checking translatableField key '{$key}': " . json_encode($translatableField));
+                
                 if (is_array($translatableField)) {
+                    $this->line("DEBUG: translatableField is array, checking relations...");
                     foreach ($translatableField as $relationField => $relationFields) {
+                        $this->line("DEBUG: Found relation '{$relationField}' with fields: " . json_encode($relationFields));
+                        
                         if ($relationField === $relationName) {
-                            $this->line("DEBUG: Found relation '{$relationName}', checking fields: " . json_encode($relationFields));
+                            $this->line("DEBUG: MATCH! Found relation '{$relationName}', checking fields: " . json_encode($relationFields));
                             
                             if (is_string($relationFields)) {
                                 // Простое поле в relation
+                                $this->line("DEBUG: relationFields is string: '{$relationFields}'");
                                 if ($fieldName === $relationFields) {
                                     $this->line("DEBUG: MATCH found for simple relation field!");
                                     return true;
                                 }
                             } elseif (is_array($relationFields)) {
                                 // Массив полей в relation
+                                $this->line("DEBUG: relationFields is array, checking each field...");
                                 foreach ($relationFields as $subFieldKey => $subFieldValue) {
+                                    $this->line("DEBUG: Checking subField key '{$subFieldKey}' value: " . json_encode($subFieldValue));
+                                    
                                     if (is_numeric($subFieldKey) && is_string($subFieldValue)) {
                                         // Простое поле в relation (числовой ключ)
+                                        $this->line("DEBUG: Numeric key check: '{$fieldName}' === '{$subFieldValue}'");
                                         if ($fieldName === $subFieldValue) {
                                             $this->line("DEBUG: MATCH found for numeric key relation field!");
                                             return true;
@@ -543,8 +554,12 @@ Options:
                                     }
                                 }
                             }
+                        } else {
+                            $this->line("DEBUG: Relation '{$relationField}' !== '{$relationName}', skipping");
                         }
                     }
+                } else {
+                    $this->line("DEBUG: translatableField is not array, skipping");
                 }
             }
         }
@@ -822,6 +837,9 @@ Options:
     protected function processRelationField($relation, string $relationField, string $fullField, array &$document, array $translatableConfig): void
     {
         $this->line("DEBUG: processRelationField - relationField: '{$relationField}', fullField: '{$fullField}'");
+        $this->line("DEBUG: Relation class: " . get_class($relation));
+        $this->line("DEBUG: Relation attributes: " . json_encode($relation->getAttributes()));
+        $this->line("DEBUG: Relation raw attributes: " . json_encode($relation->getRawOriginal()));
         
         // Проверяем, является ли поле translatable
         if ($this->isFieldTranslatable($fullField, $translatableConfig)) {

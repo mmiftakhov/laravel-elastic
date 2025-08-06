@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2024-12-19
+
+### Added
+- Added comprehensive debug dumps in `isFieldInTranslatableList` to show detailed structure of translatable_fields
+- Added relation data dumps in `processRelationField` to show relation attributes and raw data
+- Enhanced debug output to show step-by-step process of finding relations in translatable_fields
+
+### Changed
+- Improved debug information to help diagnose why relation fields are not being recognized as translatable
+
 ## [0.3.2] - 2024-12-19
 
 ### Fixed

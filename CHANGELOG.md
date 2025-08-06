@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2024-12-19
+
+### Fixed
+- Added final check in translatable field detection to search for relations directly by translatableField key
+- Enhanced logic to handle cases where relation fields are stored with numeric keys in nested arrays
+- Improved debug output to show all checking steps for translatable field detection
+
 ## [0.3.4] - 2024-12-19
 
 ### Fixed

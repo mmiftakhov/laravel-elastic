@@ -585,6 +585,22 @@ Options:
                     }
                 }
             }
+            
+            // Финальная проверка - ищем relation по ключу translatableField
+            $this->line("DEBUG: Final check - looking for relation by translatableField key...");
+            if (isset($translatableFields[$relationName]) && is_array($translatableFields[$relationName])) {
+                $this->line("DEBUG: Found relation '{$relationName}' directly in translatableFields: " . json_encode($translatableFields[$relationName]));
+                
+                foreach ($translatableFields[$relationName] as $subFieldValue) {
+                    if (is_string($subFieldValue)) {
+                        $this->line("DEBUG: Final check - '{$fieldName}' === '{$subFieldValue}'");
+                        if ($fieldName === $subFieldValue) {
+                            $this->line("DEBUG: MATCH found in final check!");
+                            return true;
+                        }
+                    }
+                }
+            }
         }
         
         $this->line("DEBUG: NO MATCH found for field '{$field}'");

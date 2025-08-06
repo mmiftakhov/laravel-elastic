@@ -506,6 +506,49 @@ Options:
             }
         }
         
+        // Дополнительная проверка для случая, когда translatable_fields имеет смешанную структуру
+        // и PHP преобразовал простые поля в числовые ключи
+        $this->line("DEBUG: Additional check for mixed structure...");
+        
+        // Проверяем, есть ли поле в виде relation.field
+        $fieldParts = explode('.', $field);
+        if (count($fieldParts) === 2) {
+            $relationName = $fieldParts[0];
+            $fieldName = $fieldParts[1];
+            
+            $this->line("DEBUG: Checking relation '{$relationName}' for field '{$fieldName}'");
+            
+            // Ищем relation в translatable_fields
+            foreach ($translatableFields as $key => $translatableField) {
+                if (is_array($translatableField)) {
+                    foreach ($translatableField as $relationField => $relationFields) {
+                        if ($relationField === $relationName) {
+                            $this->line("DEBUG: Found relation '{$relationName}', checking fields: " . json_encode($relationFields));
+                            
+                            if (is_string($relationFields)) {
+                                // Простое поле в relation
+                                if ($fieldName === $relationFields) {
+                                    $this->line("DEBUG: MATCH found for simple relation field!");
+                                    return true;
+                                }
+                            } elseif (is_array($relationFields)) {
+                                // Массив полей в relation
+                                foreach ($relationFields as $subFieldKey => $subFieldValue) {
+                                    if (is_numeric($subFieldKey) && is_string($subFieldValue)) {
+                                        // Простое поле в relation (числовой ключ)
+                                        if ($fieldName === $subFieldValue) {
+                                            $this->line("DEBUG: MATCH found for numeric key relation field!");
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         $this->line("DEBUG: NO MATCH found for field '{$field}'");
         return false;
     }

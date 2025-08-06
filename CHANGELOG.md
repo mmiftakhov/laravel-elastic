@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2024-12-19
+
+### Added
+- **NEW FEATURE**: Added `searchable_fields_boost` configuration for fine-tuning search relevance
+- Support for boost values in searchable fields with relations structure
+- Automatic handling of multilingual fields in search queries
+- Enhanced search logic with proper boost application for translatable fields
+
+### Changed
+- **BREAKING CHANGE**: Updated search logic to use new `searchable_fields_boost` configuration
+- Replaced old `getSearchFields()` method with new `getSearchFieldsWithBoost()` method
+- Updated autocomplete and highlight functions to support multilingual fields
+- Improved translatable field detection and processing in search queries
+
+### Features
+- **Boost Configuration**: New `searchable_fields_boost` setting allows precise control over search relevance:
+  ```php
+  'searchable_fields_boost' => [
+      'title' => 3.0,                    // High priority for title
+      'category' => [
+          'title' => 2.0,               // Medium priority for category title
+          'manufacturer' => [
+              'name' => 1.5,            // Medium priority for manufacturer name
+          ]
+      ],
+  ],
+  ```
+- **Multilingual Search**: Automatic handling of translatable fields in search:
+  - Regular fields: `title` → `title^3.0`
+  - Translatable fields: `title` → `title_en^3.0`, `title_lv^3.0`
+  - Relation fields: `category.title` → `category.title^2.0`
+  - Translatable relation fields: `category.title` → `category.title_en^2.0`, `category.title_lv^2.0`
+
+### Technical Details
+- New method `getSearchFieldsWithBoost()` replaces old search field extraction logic
+- Added `extractSearchFieldsWithBoostFromConfig()` for processing boost configuration
+- Added `addFieldWithBoost()` and related methods for handling multilingual fields
+- Updated `getAutocompleteFields()` and `getHighlightFields()` for multilingual support
+- Enhanced `getTranslatableConfig()` and `isFieldTranslatable()` methods
+
+### Migration Guide
+⚠️ **ВНИМАНИЕ**: This version introduces new search logic. To use the new boost functionality:
+
+1. Add `searchable_fields_boost` configuration to your models:
+   ```php
+   'searchable_fields_boost' => [
+       'title' => 3.0,
+       'description' => 2.0,
+       'category' => ['title' => 2.0],
+   ],
+   ```
+
+2. The search will automatically use boost values from this configuration
+3. If no boost is specified for a field, it defaults to 1.0
+4. Translatable fields are automatically expanded with language suffixes
+
+### Fixed
+- Improved search relevance through proper boost application
+- Better handling of multilingual fields in search queries
+- Enhanced support for nested relations in search configuration
+
 ## [0.4.0] - 2024-12-19
 
 ### Fixed

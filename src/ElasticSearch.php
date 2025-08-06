@@ -185,7 +185,8 @@ class ElasticSearch
      * 
      * Создает полную структуру запроса с учетом всех настроек:
      * - multi_match запрос для поиска по нескольким полям
-     * - настройки релевантности из конфигурации
+     * - настройки релевантности из конфигурации searchable_fields_boost
+     * - обработка мультиязычных полей (title_en, title_lv, etc.)
      * - сортировка, агрегации, подсветка
      * - пагинация
      * 
@@ -196,7 +197,8 @@ class ElasticSearch
      */
     protected function buildSearchParams(string $query, array $config, array $options = []): array
     {
-        $searchFields = $this->getSearchFields($config, $options['fields'] ?? null, $options['boost'] ?? null);
+        // Получаем поля для поиска с учетом boost из конфигурации
+        $searchFields = $this->getSearchFieldsWithBoost($config, $options['fields'] ?? null, $options['boost'] ?? null);
         $searchSettings = Config::get('elastic.search.default', []);
 
         $searchParams = [
@@ -251,17 +253,17 @@ class ElasticSearch
     }
 
     /**
-     * Получает поля для поиска из конфигурации
+     * Получает поля для поиска с учетом boost из конфигурации
      * 
-     * Поддерживает новую структуру searchable_fields с relations
-     * и boost значения из опций поиска.
+     * Поддерживает новую структуру searchable_fields_boost с relations
+     * и автоматическую обработку мультиязычных полей.
      * 
      * @param array $config Конфигурация модели
      * @param array|null $fields Поля для поиска (если указаны)
      * @param array|null $boost Boost значения для полей
      * @return array Массив полей с boost значениями
      */
-    protected function getSearchFields(array $config, ?array $fields, ?array $boost): array
+    protected function getSearchFieldsWithBoost(array $config, ?array $fields, ?array $boost): array
     {
         if ($fields) {
             // Применяем boost к указанным полям
@@ -276,84 +278,225 @@ class ElasticSearch
         }
 
         $searchFields = [];
+        $boostConfig = $config['searchable_fields_boost'] ?? [];
+        $translatableConfig = $this->getTranslatableConfig($config);
         
-        $this->extractSearchFieldsFromConfig($config['searchable_fields'] ?? [], $searchFields, $boost);
+        $this->extractSearchFieldsWithBoostFromConfig(
+            $config['searchable_fields'] ?? [], 
+            $searchFields, 
+            $boostConfig,
+            $translatableConfig
+        );
 
         return $searchFields;
     }
 
     /**
-     * Извлекает поля для поиска из конфигурации
+     * Извлекает поля для поиска из конфигурации с учетом boost и мультиязычности
      * 
      * @param array $searchableFields Поля для поиска
      * @param array $searchFields Массив для заполнения полей
-     * @param array|null $boost Boost значения
+     * @param array $boostConfig Конфигурация boost значений
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractSearchFieldsFromConfig(array $searchableFields, array &$searchFields, ?array $boost): void
-    {
+    protected function extractSearchFieldsWithBoostFromConfig(
+        array $searchableFields, 
+        array &$searchFields, 
+        array $boostConfig,
+        array $translatableConfig
+    ): void {
         foreach ($searchableFields as $field => $fieldConfig) {
-            if (is_string($field)) {
-                // Простое поле
-                $fieldBoost = $boost[$field] ?? 1.0;
-                $searchFields[] = $field . '^' . $fieldBoost;
-            } elseif (is_array($fieldConfig)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
+                // Простое поле (числовой ключ)
+                $this->addFieldWithBoost($fieldConfig, $searchFields, $boostConfig, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Relation поля
-                $this->extractRelationSearchFields($field, $fieldConfig, $searchFields, $boost);
+                $this->extractRelationSearchFieldsWithBoost($field, $fieldConfig, $searchFields, $boostConfig, $translatableConfig);
             }
         }
     }
 
     /**
-     * Извлекает поля relations для поиска
+     * Добавляет поле с boost значением, учитывая мультиязычность
+     * 
+     * @param string $field Имя поля
+     * @param array $searchFields Массив полей для поиска
+     * @param array $boostConfig Конфигурация boost
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function addFieldWithBoost(string $field, array &$searchFields, array $boostConfig, array $translatableConfig): void
+    {
+        $fieldBoost = $boostConfig[$field] ?? 1.0;
+        
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($field, $translatableConfig)) {
+            // Для translatable полей добавляем поля для каждого языка
+            foreach ($translatableConfig['locales'] as $locale) {
+                $localizedField = $field . '_' . $locale;
+                $searchFields[] = $localizedField . '^' . $fieldBoost;
+            }
+        } else {
+            // Для обычных полей добавляем одно поле
+            $searchFields[] = $field . '^' . $fieldBoost;
+        }
+    }
+
+    /**
+     * Извлекает поля relations для поиска с учетом boost и мультиязычности
      * 
      * @param string $relationName Имя relation
      * @param array $relationFields Поля relation
      * @param array $searchFields Массив для заполнения полей
-     * @param array|null $boost Boost значения
+     * @param array $boostConfig Конфигурация boost значений
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractRelationSearchFields(string $relationName, array $relationFields, array &$searchFields, ?array $boost): void
-    {
+    protected function extractRelationSearchFieldsWithBoost(
+        string $relationName, 
+        array $relationFields, 
+        array &$searchFields, 
+        array $boostConfig,
+        array $translatableConfig
+    ): void {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле в relation
-                $fullField = $relationName . '.' . $field;
-                $fieldBoost = $boost[$fullField] ?? 1.0;
-                $searchFields[] = $fullField . '^' . $fieldBoost;
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationName . '.' . $fieldConfig;
+                $this->addRelationFieldWithBoost($relationName, $fieldConfig, $fullField, $searchFields, $boostConfig, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Вложенное relation
-                $this->extractNestedRelationSearchFields($relationName . '.' . $field, $fieldConfig, $searchFields, $boost);
+                $this->extractNestedRelationSearchFieldsWithBoost($relationName . '.' . $field, $fieldConfig, $searchFields, $boostConfig, $translatableConfig);
             }
         }
     }
 
     /**
-     * Извлекает поля вложенных relations для поиска
+     * Добавляет поле relation с boost значением, учитывая мультиязычность
+     * 
+     * @param string $relationName Имя relation
+     * @param string $relationField Имя поля в relation
+     * @param string $fullField Полное имя поля
+     * @param array $searchFields Массив полей для поиска
+     * @param array $boostConfig Конфигурация boost
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function addRelationFieldWithBoost(
+        string $relationName, 
+        string $relationField, 
+        string $fullField, 
+        array &$searchFields, 
+        array $boostConfig, 
+        array $translatableConfig
+    ): void {
+        // Получаем boost для relation поля
+        $relationBoostConfig = $boostConfig[$relationName] ?? [];
+        $fieldBoost = $relationBoostConfig[$relationField] ?? 1.0;
+        
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($fullField, $translatableConfig)) {
+            // Для translatable полей добавляем поля для каждого языка
+            foreach ($translatableConfig['locales'] as $locale) {
+                $localizedField = $fullField . '_' . $locale;
+                $searchFields[] = $localizedField . '^' . $fieldBoost;
+            }
+        } else {
+            // Для обычных полей добавляем одно поле
+            $searchFields[] = $fullField . '^' . $fieldBoost;
+        }
+    }
+
+    /**
+     * Извлекает поля вложенных relations для поиска с учетом boost и мультиязычности
      * 
      * @param string $relationPath Путь к relation
      * @param array $relationFields Поля relation
      * @param array $searchFields Массив для заполнения полей
-     * @param array|null $boost Boost значения
+     * @param array $boostConfig Конфигурация boost значений
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractNestedRelationSearchFields(string $relationPath, array $relationFields, array &$searchFields, ?array $boost): void
-    {
+    protected function extractNestedRelationSearchFieldsWithBoost(
+        string $relationPath, 
+        array $relationFields, 
+        array &$searchFields, 
+        array $boostConfig,
+        array $translatableConfig
+    ): void {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле во вложенном relation
-                $fullField = $relationPath . '.' . $field;
-                $fieldBoost = $boost[$fullField] ?? 1.0;
-                $searchFields[] = $fullField . '^' . $fieldBoost;
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationPath . '.' . $fieldConfig;
+                $this->addNestedRelationFieldWithBoost($relationPath, $fieldConfig, $fullField, $searchFields, $boostConfig, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Еще более вложенное relation
-                $this->extractNestedRelationSearchFields($relationPath . '.' . $field, $fieldConfig, $searchFields, $boost);
+                $this->extractNestedRelationSearchFieldsWithBoost($relationPath . '.' . $field, $fieldConfig, $searchFields, $boostConfig, $translatableConfig);
             }
         }
+    }
+
+    /**
+     * Добавляет поле вложенного relation с boost значением, учитывая мультиязычность
+     * 
+     * @param string $relationPath Путь к relation
+     * @param string $relationField Имя поля в relation
+     * @param string $fullField Полное имя поля
+     * @param array $searchFields Массив полей для поиска
+     * @param array $boostConfig Конфигурация boost
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function addNestedRelationFieldWithBoost(
+        string $relationPath, 
+        string $relationField, 
+        string $fullField, 
+        array &$searchFields, 
+        array $boostConfig, 
+        array $translatableConfig
+    ): void {
+        // Получаем boost для вложенного relation поля
+        $fieldBoost = $this->getNestedRelationBoost($relationPath, $relationField, $boostConfig);
+        
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($fullField, $translatableConfig)) {
+            // Для translatable полей добавляем поля для каждого языка
+            foreach ($translatableConfig['locales'] as $locale) {
+                $localizedField = $fullField . '_' . $locale;
+                $searchFields[] = $localizedField . '^' . $fieldBoost;
+            }
+        } else {
+            // Для обычных полей добавляем одно поле
+            $searchFields[] = $fullField . '^' . $fieldBoost;
+        }
+    }
+
+    /**
+     * Получает boost значение для вложенного relation поля
+     * 
+     * @param string $relationPath Путь к relation
+     * @param string $relationField Имя поля в relation
+     * @param array $boostConfig Конфигурация boost
+     * @return float Boost значение
+     */
+    protected function getNestedRelationBoost(string $relationPath, string $relationField, array $boostConfig): float
+    {
+        $pathParts = explode('.', $relationPath);
+        $currentConfig = $boostConfig;
+        
+        // Проходим по пути к вложенному relation
+        foreach ($pathParts as $part) {
+            if (isset($currentConfig[$part]) && is_array($currentConfig[$part])) {
+                $currentConfig = $currentConfig[$part];
+            } else {
+                return 1.0; // Если путь не найден, возвращаем значение по умолчанию
+            }
+        }
+        
+        // Возвращаем boost для конкретного поля
+        return $currentConfig[$relationField] ?? 1.0;
     }
 
     /**
      * Получает поля для автодополнения
      * 
      * Извлекает все поля из новой структуры searchable_fields
-     * для использования в автодополнении.
+     * для использования в автодополнении с поддержкой мультиязычных полей.
      * 
      * @param array $config Конфигурация модели
      * @return array Массив полей для автодополнения
@@ -361,8 +504,13 @@ class ElasticSearch
     protected function getAutocompleteFields(array $config): array
     {
         $autocompleteFields = [];
+        $translatableConfig = $this->getTranslatableConfig($config);
         
-        $this->extractAutocompleteFieldsFromConfig($config['searchable_fields'] ?? [], $autocompleteFields);
+        $this->extractAutocompleteFieldsFromConfig(
+            $config['searchable_fields'] ?? [], 
+            $autocompleteFields,
+            $translatableConfig
+        );
 
         return $autocompleteFields;
     }
@@ -372,17 +520,39 @@ class ElasticSearch
      * 
      * @param array $searchableFields Поля для поиска
      * @param array $autocompleteFields Массив для заполнения полей
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractAutocompleteFieldsFromConfig(array $searchableFields, array &$autocompleteFields): void
+    protected function extractAutocompleteFieldsFromConfig(array $searchableFields, array &$autocompleteFields, array $translatableConfig): void
     {
         foreach ($searchableFields as $field => $fieldConfig) {
-            if (is_string($field)) {
-                // Простое поле
-                $autocompleteFields[] = $field;
-            } elseif (is_array($fieldConfig)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
+                // Простое поле (числовой ключ)
+                $this->addAutocompleteField($fieldConfig, $autocompleteFields, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Relation поля
-                $this->extractRelationAutocompleteFields($field, $fieldConfig, $autocompleteFields);
+                $this->extractRelationAutocompleteFields($field, $fieldConfig, $autocompleteFields, $translatableConfig);
             }
+        }
+    }
+
+    /**
+     * Добавляет поле для автодополнения, учитывая мультиязычность
+     * 
+     * @param string $field Имя поля
+     * @param array $autocompleteFields Массив полей для автодополнения
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function addAutocompleteField(string $field, array &$autocompleteFields, array $translatableConfig): void
+    {
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($field, $translatableConfig)) {
+            // Для translatable полей добавляем поля для каждого языка
+            foreach ($translatableConfig['locales'] as $locale) {
+                $autocompleteFields[] = $field . '_' . $locale;
+            }
+        } else {
+            // Для обычных полей добавляем одно поле
+            $autocompleteFields[] = $field;
         }
     }
 
@@ -392,16 +562,18 @@ class ElasticSearch
      * @param string $relationName Имя relation
      * @param array $relationFields Поля relation
      * @param array $autocompleteFields Массив для заполнения полей
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractRelationAutocompleteFields(string $relationName, array $relationFields, array &$autocompleteFields): void
+    protected function extractRelationAutocompleteFields(string $relationName, array $relationFields, array &$autocompleteFields, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле в relation
-                $autocompleteFields[] = $relationName . '.' . $field;
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationName . '.' . $fieldConfig;
+                $this->addAutocompleteField($fullField, $autocompleteFields, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Вложенное relation
-                $this->extractNestedRelationAutocompleteFields($relationName . '.' . $field, $fieldConfig, $autocompleteFields);
+                $this->extractNestedRelationAutocompleteFields($relationName . '.' . $field, $fieldConfig, $autocompleteFields, $translatableConfig);
             }
         }
     }
@@ -412,16 +584,18 @@ class ElasticSearch
      * @param string $relationPath Путь к relation
      * @param array $relationFields Поля relation
      * @param array $autocompleteFields Массив для заполнения полей
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractNestedRelationAutocompleteFields(string $relationPath, array $relationFields, array &$autocompleteFields): void
+    protected function extractNestedRelationAutocompleteFields(string $relationPath, array $relationFields, array &$autocompleteFields, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле во вложенном relation
-                $autocompleteFields[] = $relationPath . '.' . $field;
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationPath . '.' . $fieldConfig;
+                $this->addAutocompleteField($fullField, $autocompleteFields, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Еще более вложенное relation
-                $this->extractNestedRelationAutocompleteFields($relationPath . '.' . $field, $fieldConfig, $autocompleteFields);
+                $this->extractNestedRelationAutocompleteFields($relationPath . '.' . $field, $fieldConfig, $autocompleteFields, $translatableConfig);
             }
         }
     }
@@ -430,7 +604,7 @@ class ElasticSearch
      * Получает поля для подсветки результатов
      * 
      * Настраивает подсветку для всех текстовых полей из новой структуры
-     * searchable_fields с оптимальными параметрами.
+     * searchable_fields с оптимальными параметрами и поддержкой мультиязычных полей.
      * 
      * @param array $config Конфигурация модели
      * @return array Конфигурация подсветки для Elasticsearch
@@ -438,8 +612,13 @@ class ElasticSearch
     protected function getHighlightFields(array $config): array
     {
         $highlightFields = [];
+        $translatableConfig = $this->getTranslatableConfig($config);
         
-        $this->extractHighlightFieldsFromConfig($config['searchable_fields'] ?? [], $highlightFields);
+        $this->extractHighlightFieldsFromConfig(
+            $config['searchable_fields'] ?? [], 
+            $highlightFields,
+            $translatableConfig
+        );
 
         return $highlightFields;
     }
@@ -449,21 +628,45 @@ class ElasticSearch
      * 
      * @param array $searchableFields Поля для поиска
      * @param array $highlightFields Массив для заполнения полей подсветки
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractHighlightFieldsFromConfig(array $searchableFields, array &$highlightFields): void
+    protected function extractHighlightFieldsFromConfig(array $searchableFields, array &$highlightFields, array $translatableConfig): void
     {
         foreach ($searchableFields as $field => $fieldConfig) {
-            if (is_string($field)) {
-                // Простое поле
-                $highlightFields[$field] = [
-                    'type' => 'unified',
-                    'fragment_size' => 150,
-                    'number_of_fragments' => 3,
-                ];
-            } elseif (is_array($fieldConfig)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
+                // Простое поле (числовой ключ)
+                $this->addHighlightField($fieldConfig, $highlightFields, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Relation поля
-                $this->extractRelationHighlightFields($field, $fieldConfig, $highlightFields);
+                $this->extractRelationHighlightFields($field, $fieldConfig, $highlightFields, $translatableConfig);
             }
+        }
+    }
+
+    /**
+     * Добавляет поле для подсветки, учитывая мультиязычность
+     * 
+     * @param string $field Имя поля
+     * @param array $highlightFields Массив полей для подсветки
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function addHighlightField(string $field, array &$highlightFields, array $translatableConfig): void
+    {
+        $highlightConfig = [
+            'type' => 'unified',
+            'fragment_size' => 150,
+            'number_of_fragments' => 3,
+        ];
+
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($field, $translatableConfig)) {
+            // Для translatable полей добавляем поля для каждого языка
+            foreach ($translatableConfig['locales'] as $locale) {
+                $highlightFields[$field . '_' . $locale] = $highlightConfig;
+            }
+        } else {
+            // Для обычных полей добавляем одно поле
+            $highlightFields[$field] = $highlightConfig;
         }
     }
 
@@ -473,20 +676,18 @@ class ElasticSearch
      * @param string $relationName Имя relation
      * @param array $relationFields Поля relation
      * @param array $highlightFields Массив для заполнения полей подсветки
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractRelationHighlightFields(string $relationName, array $relationFields, array &$highlightFields): void
+    protected function extractRelationHighlightFields(string $relationName, array $relationFields, array &$highlightFields, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле в relation
-                $highlightFields[$relationName . '.' . $field] = [
-                    'type' => 'unified',
-                    'fragment_size' => 150,
-                    'number_of_fragments' => 3,
-                ];
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationName . '.' . $fieldConfig;
+                $this->addHighlightField($fullField, $highlightFields, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Вложенное relation
-                $this->extractNestedRelationHighlightFields($relationName . '.' . $field, $fieldConfig, $highlightFields);
+                $this->extractNestedRelationHighlightFields($relationName . '.' . $field, $fieldConfig, $highlightFields, $translatableConfig);
             }
         }
     }
@@ -497,20 +698,18 @@ class ElasticSearch
      * @param string $relationPath Путь к relation
      * @param array $relationFields Поля relation
      * @param array $highlightFields Массив для заполнения полей подсветки
+     * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function extractNestedRelationHighlightFields(string $relationPath, array $relationFields, array &$highlightFields): void
+    protected function extractNestedRelationHighlightFields(string $relationPath, array $relationFields, array &$highlightFields, array $translatableConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
-            if (is_string($field)) {
+            if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле во вложенном relation
-                $highlightFields[$relationPath . '.' . $field] = [
-                    'type' => 'unified',
-                    'fragment_size' => 150,
-                    'number_of_fragments' => 3,
-                ];
-            } elseif (is_array($fieldConfig)) {
+                $fullField = $relationPath . '.' . $fieldConfig;
+                $this->addHighlightField($fullField, $highlightFields, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Еще более вложенное relation
-                $this->extractNestedRelationHighlightFields($relationPath . '.' . $field, $fieldConfig, $highlightFields);
+                $this->extractNestedRelationHighlightFields($relationPath . '.' . $field, $fieldConfig, $highlightFields, $translatableConfig);
             }
         }
     }
@@ -807,5 +1006,163 @@ class ElasticSearch
         } catch (\Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * Получает конфигурацию translatable полей
+     * 
+     * Объединяет глобальные настройки с настройками конкретной модели
+     * 
+     * @param array $config Конфигурация модели
+     * @return array Конфигурация translatable полей
+     */
+    protected function getTranslatableConfig(array $config): array
+    {
+        $globalConfig = Config::get('elastic.translatable', []);
+        $modelConfig = $config['translatable'] ?? [];
+        
+        $mergedConfig = array_merge($globalConfig, $modelConfig);
+        
+        // Устанавливаем значения по умолчанию, если они отсутствуют
+        $mergedConfig['locales'] = $mergedConfig['locales'] ?? ['en'];
+        $mergedConfig['fallback_locale'] = $mergedConfig['fallback_locale'] ?? 'en';
+        $mergedConfig['index_localized_fields'] = $mergedConfig['index_localized_fields'] ?? true;
+        $mergedConfig['auto_detect_translatable'] = $mergedConfig['auto_detect_translatable'] ?? true;
+        $mergedConfig['translatable_fields'] = $mergedConfig['translatable_fields'] ?? [];
+        
+        return $mergedConfig;
+    }
+
+    /**
+     * Определяет, является ли поле translatable
+     * 
+     * @param string $field Имя поля (может содержать relations)
+     * @param array $translatableConfig Конфигурация translatable полей
+     * @return bool True, если поле translatable
+     */
+    protected function isFieldTranslatable(string $field, array $translatableConfig): bool
+    {
+        if (!$translatableConfig['auto_detect_translatable']) {
+            return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+        }
+        
+        // Для auto_detect проверяем по списку translatable_fields
+        return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+    }
+
+    /**
+     * Проверяет, есть ли поле в списке translatable полей
+     * 
+     * @param string $field Имя поля
+     * @param array $translatableFields Список translatable полей
+     * @return bool True, если поле найдено в списке
+     */
+    protected function isFieldInTranslatableList(string $field, array $translatableFields): bool
+    {
+        foreach ($translatableFields as $key => $translatableField) {
+            if (is_string($translatableField)) {
+                // Простое поле (может быть с числовым ключом)
+                if ($field === $translatableField) {
+                    return true;
+                }
+            } elseif (is_array($translatableField)) {
+                // Relation поле - проверяем все поля в relation
+                foreach ($translatableField as $relationField => $relationFields) {
+                    if (is_string($relationFields)) {
+                        // Простое поле в relation
+                        $expectedField = $relationField . '.' . $relationFields;
+                        if ($field === $expectedField) {
+                            return true;
+                        }
+                    } elseif (is_array($relationFields)) {
+                        // Массив полей в relation
+                        foreach ($relationFields as $subFieldKey => $subFieldValue) {
+                            if (is_numeric($subFieldKey) && is_string($subFieldValue)) {
+                                // Простое поле в relation (числовой ключ)
+                                $expectedField = $relationField . '.' . $subFieldValue;
+                                if ($field === $expectedField) {
+                                    return true;
+                                }
+                            } elseif (is_string($subFieldKey) && is_array($subFieldValue)) {
+                                // Вложенные relations
+                                foreach ($subFieldValue as $nestedField) {
+                                    if (is_string($nestedField)) {
+                                        $expectedField = $relationField . '.' . $subFieldKey . '.' . $nestedField;
+                                        if ($field === $expectedField) {
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Дополнительная проверка для случая, когда translatable_fields имеет смешанную структуру
+        // и PHP преобразовал простые поля в числовые ключи
+        $fieldParts = explode('.', $field);
+        if (count($fieldParts) === 2) {
+            $relationName = $fieldParts[0];
+            $fieldName = $fieldParts[1];
+            
+            // Ищем relation в translatable_fields
+            foreach ($translatableFields as $key => $translatableField) {
+                if (is_array($translatableField)) {
+                    foreach ($translatableField as $relationField => $relationFields) {
+                        if ($relationField === $relationName) {
+                            if (is_string($relationFields)) {
+                                // Простое поле в relation
+                                if ($fieldName === $relationFields) {
+                                    return true;
+                                }
+                            } elseif (is_array($relationFields)) {
+                                // Массив полей в relation
+                                foreach ($relationFields as $subFieldKey => $subFieldValue) {
+                                    if (is_numeric($subFieldKey) && is_string($subFieldValue)) {
+                                        // Простое поле в relation (числовой ключ)
+                                        if ($fieldName === $subFieldValue) {
+                                            return true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Дополнительная проверка для случая, когда relationFields является массивом с числовыми ключами
+            foreach ($translatableFields as $key => $translatableField) {
+                if (is_array($translatableField)) {
+                    foreach ($translatableField as $relationField => $relationFields) {
+                        if ($relationField === $relationName && is_array($relationFields)) {
+                            // Проверяем все значения в массиве (игнорируя ключи)
+                            foreach ($relationFields as $subFieldValue) {
+                                if (is_string($subFieldValue)) {
+                                    if ($fieldName === $subFieldValue) {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Финальная проверка - ищем relation по ключу translatableField
+            if (isset($translatableFields[$relationName]) && is_array($translatableFields[$relationName])) {
+                foreach ($translatableFields[$relationName] as $subFieldValue) {
+                    if (is_string($subFieldValue)) {
+                        if ($fieldName === $subFieldValue) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        return false;
     }
 } 

@@ -1,6 +1,21 @@
-# Laravel Elastic
+# Laravel Elastic Package
 
-Пакет для упрощения интеграции Elasticsearch в Laravel проекты. Предоставляет готовые команды для индексации моделей и удобный API для поиска.
+Пакет для интеграции Elasticsearch с Laravel, который упрощает индексацию моделей и поиск по ним.
+
+[![Latest Version on Packagist](https://img.shields.io/packagist/v/maratmiftahov/laravel-elastic.svg)](https://packagist.org/packages/maratmiftahov/laravel-elastic)
+[![Total Downloads](https://img.shields.io/packagist/dt/maratmiftahov/laravel-elastic.svg)](https://packagist.org/packages/maratmiftahov/laravel-elastic)
+[![License](https://img.shields.io/packagist/l/maratmiftahov/laravel-elastic.svg)](https://packagist.org/packages/maratmiftahov/laravel-elastic)
+
+## 🚀 Новое в версии 0.2.4
+
+- ✅ **Исправлена логика индексирования** - теперь все поля корректно индексируются
+- ✅ **Полная поддержка translatable полей в relations** - `category.title_en`, `category.title_lv`
+- ✅ **Поддержка вложенных relations** - `category.manufacturer.name_en`
+- ✅ **Поддержка множественных relations** - `images.alt_en`, `images.alt_lv`
+- ✅ **Автоматическое определение translatable полей** в любой структуре
+- 🔧 **Улучшения конфигурации** - исправлена структура searchable_fields
+
+[Подробнее об изменениях →](CHANGELOG.md#024---2024-12-19)
 
 ## Установка
 
@@ -8,110 +23,65 @@
 composer require maratmiftahov/laravel-elastic
 ```
 
-## Публикация конфигурации
-
-```bash
-php artisan vendor:publish --provider="Maratmiftahov\LaravelElastic\ElasticServiceProvider" --tag="config"
-```
-
 ## Конфигурация
 
-### Основные настройки
+Опубликуйте конфигурационный файл:
 
-В файле `config/elastic.php` настройте подключение к Elasticsearch:
-
-```php
-'hosts' => [
-    env('ELASTICSEARCH_HOST_FULL', 'http://localhost:9200'),
-],
-
-'connection' => [
-    'retries' => env('ELASTICSEARCH_RETRIES', 3),
-],
+```bash
+php artisan vendor:publish --provider="Maratmiftahov\LaravelElastic\ElasticServiceProvider"
 ```
 
-### Настройка моделей
+## Настройка моделей
 
-Добавьте модели в секцию `models`:
-
-#### Типы полей
-
-- **`searchable_fields`** - поля для индексации и поиска
-  - Эти поля индексируются в Elasticsearch и участвуют в поиске
-  - Определяют маппинг полей в индексе
-  - Используются при индексировании для создания структуры данных
-
-- **`return_fields`** - поля для возврата из базы данных
-  - Определяет, какие поля и отношения загружать из БД после поиска
-  - Поддерживает вложенные отношения: `'relation' => ['поле', 'вложенное_отношение' => ['поле']]`
-  - Результаты сохраняют порядок сортировки из Elasticsearch
-  - Оптимизированные запросы с выборкой только нужных полей
+В файле `config/elastic.php` настройте модели для индексации:
 
 ```php
 'models' => [
     'App\\Models\\Product' => [
         'index' => 'products',
         
-        // Поля для поиска - определяют маппинг в Elasticsearch и индексируются
-        'searchable_fields' => [
-            'name' => [
-                'type' => 'text',
-                'analyzer' => 'russian',
-                'boost' => 3.0,
-                'fields' => [
-                    'exact' => [
-                        'type' => 'text',
-                        'analyzer' => 'exact_match',
-                        'boost' => 5.0,
-                    ],
-                    'autocomplete' => [
-                        'type' => 'text',
-                        'analyzer' => 'autocomplete',
-                        'boost' => 1.5,
-                    ],
-                ],
-            ],
-            'description' => [
-                'type' => 'text',
-                'analyzer' => 'russian',
-                'boost' => 1.0,
-            ],
-            'category' => [
-                'type' => 'keyword',
-                'boost' => 2.0,
+        // Настройки translatable полей
+        'translatable' => [
+            'locales' => ['en', 'lv'],
+            'fallback_locale' => 'en',
+            'index_localized_fields' => true,
+            'auto_detect_translatable' => true,
+            'translatable_fields' => [
+                'title', 'slug', 'description',
+                'category' => ['title', 'description'],
+                'brand' => ['name', 'description'],
             ],
         ],
         
-        // Поля для возврата из базы данных после поиска
+        // Поля для поиска
+        'searchable_fields' => [
+            // Простые поля модели
+            'title', 'slug', 'description', 'is_active',
+            
+            // Поля из relations
+            'category' => [
+                'title', 'slug', 'is_active',
+                'manufacturer' => ['name', 'code']
+            ],
+            'brand' => ['name', 'slug', 'logo'],
+            
+            // Поля из коллекций
+            'images' => ['url', 'alt'],
+        ],
+        
+        // Поля для возврата после поиска
         'return_fields' => [
-            'id', 'name', 'description', 'price', 'is_active',
-            'category' => ['id', 'name', 'slug'],
+            'id', 'title', 'slug', 'is_active',
+            'category' => ['id', 'title', 'slug'],
             'brand' => ['id', 'name', 'logo'],
-            'images' => ['id', 'url', 'alt'],
         ],
         
         // Вычисляемые поля
         'computed_fields' => [
             'search_text' => [
                 'type' => 'text',
-                'analyzer' => 'full_text',
-                'source' => ['name', 'description', 'category'],
-            ],
-            'price_range' => [
-                'type' => 'keyword',
-                'source' => 'price',
-                'transform' => 'price_range',
-            ],
-        ],
-        
-        // Условия фильтрации
-        'query_conditions' => [
-            'where' => [
-                'is_active' => true,
-                'deleted_at' => null,
-            ],
-            'where_in' => [
-                'status' => ['published', 'approved'],
+                'analyzer' => 'standard',
+                'source' => ['title', 'title_en', 'title_lv', 'description'],
             ],
         ],
         
@@ -120,31 +90,7 @@ php artisan vendor:publish --provider="Maratmiftahov\LaravelElastic\ElasticServi
 ],
 ```
 
-### Пример использования return_fields
-
-```php
-// Конфигурация с вложенными отношениями
-'return_fields' => [
-    'id', 'title', 'description', 'price',
-    'category' => [
-        'id', 'name', 'slug',
-        'parent' => ['id', 'name']  // Вложенное отношение
-    ],
-    'brand' => ['id', 'name', 'logo'],
-    'images' => ['id', 'url', 'alt'],
-    'specifications' => [
-        'id', 'name', 'value',
-        'specification_type' => ['id', 'name']
-    ],
-],
-
-// Результат поиска будет содержать:
-// - Данные из Elasticsearch (скор, подсветка)
-// - Данные из БД с указанными полями и отношениями
-// - Сохраненный порядок сортировки из Elasticsearch
-```
-
-## Команды
+## Использование
 
 ### Индексация
 
@@ -155,17 +101,14 @@ php artisan elastic:index
 # Индексация конкретной модели
 php artisan elastic:index --model="App\\Models\\Product"
 
-# Принудительная переиндексация
-php artisan elastic:index --force
+# Переиндексация (удаление + создание + индексация)
+php artisan elastic:index --reindex
 
 # Только создание индексов без данных
 php artisan elastic:index --create-only
 
 # Только удаление индексов
 php artisan elastic:index --delete-only
-
-# Переиндексация (удаление + создание + индексация)
-php artisan elastic:index --reindex
 
 # Настройка размера чанка
 php artisan elastic:index --chunk=500
@@ -174,222 +117,51 @@ php artisan elastic:index --chunk=500
 ### Поиск
 
 ```bash
-# Поиск во всех моделях
-php artisan elastic:search "iphone"
+# Поиск по всем индексированным моделям
+php artisan elastic:search "поисковый запрос"
 
-# Поиск в конкретной модели
-php artisan elastic:search "iphone" --model="App\\Models\\Product"
-
-# Ограничение результатов
-php artisan elastic:search "iphone" --limit=20 --offset=10
-
-# Поиск в конкретных полях
-php artisan elastic:search "iphone" --fields="name,description"
-
-# Использование конкретного анализатора
-php artisan elastic:search "iphone" --analyzer="english"
+# Поиск с фильтрами
+php artisan elastic:search "запрос" --filters="category:electronics,price:100-1000"
 ```
 
-## Использование в коде
+## Логика индексирования
 
-### Поиск
+### Простые поля
 
-```php
-use Maratmiftahov\LaravelElastic\ElasticSearch;
+- **Обычные поля**: индексируются как есть (`title`, `is_active`)
+- **Translatable поля**: создаются поля для каждого языка (`title_en`, `title_lv`)
 
-class ProductController extends Controller
-{
-    public function search(Request $request, ElasticSearch $elasticSearch)
-    {
-        $query = $request->get('q');
-        
-        // Поиск в конкретной модели
-        $results = $elasticSearch->search('App\\Models\\Product', $query, [
-            'limit' => 20,
-            'offset' => 0,
-            'sort' => ['_score' => 'desc'],
-        ]);
-        
-        // Получение метаданных
-        $total = $results->get('_meta')['total'];
-        $maxScore = $results->get('_meta')['max_score'];
-        
-        // Поиск во всех моделях
-        $allResults = $elasticSearch->searchAll($query);
-        
-        return response()->json([
-            'results' => $results->forget('_meta'),
-            'meta' => $results->get('_meta'),
-        ]);
-    }
-}
-```
+### Relation поля
 
-### Автодополнение
+- **Обычные relation поля**: `category.title`, `brand.name`
+- **Translatable relation поля**: `category.title_en`, `category.title_lv`
+- **Вложенные relations**: `category.manufacturer.name`, `category.manufacturer.name_en`
 
-```php
-public function autocomplete(Request $request, ElasticSearch $elasticSearch)
-{
-    $query = $request->get('q');
-    
-    $suggestions = $elasticSearch->autocomplete('App\\Models\\Product', $query, [
-        'limit' => 10,
-    ]);
-    
-    return response()->json($suggestions);
-}
-```
+### Множественные relations (коллекции)
+
+- **Обычные**: объединяются в одно поле (`images.url`)
+- **Translatable**: создаются поля для каждого языка (`images.url_en`, `images.url_lv`)
+
+## Поддерживаемые типы данных
+
+- **Text**: текстовые поля с анализом
+- **Keyword**: точные совпадения
+- **Number**: числовые поля
+- **Date**: даты
+- **Boolean**: логические значения
 
 ## Анализаторы
 
-Пакет поддерживает следующие анализаторы:
+Пакет поддерживает различные анализаторы для разных языков:
 
-### Языковые анализаторы
+- `english` - для английского языка
+- `latvian` - для латышского языка  
 - `russian` - для русского языка
-- `english` - для английского языка  
-- `latvian` - для латышского языка
-
-### Специальные анализаторы
-- `exact_match` - для точного совпадения
-- `partial_match` - для частичного совпадения
-- `autocomplete` - для автодополнения
-- `full_text` - для поиска по всему тексту
-
-## Трансформации
-
-Поддерживаются следующие трансформации для computed_fields:
-
-- `price_range` - группировка цен по диапазонам
-- `popularity_score` - расчет популярности
-- `availability_status` - статус доступности
-
-## Настройки поиска
-
-В конфигурации можно настроить параметры поиска:
-
-```php
-'search' => [
-    'default' => [
-        'operator' => 'OR',
-        'fuzziness' => 'AUTO',
-        'minimum_should_match' => '75%',
-    ],
-    'autocomplete' => [
-        'min_score' => 0.1,
-        'max_suggestions' => 10,
-    ],
-],
-```
-
-## Многоязычная поддержка
-
-Пакет поддерживает автоматическую обработку translatable полей (JSON структур с переводами).
-
-### Глобальные настройки
-
-В конфигурации `config/elastic.php` можно настроить глобальные параметры для translatable полей:
-
-```php
-'translatable' => [
-    'locales' => ['en', 'lv', 'ru'],           // Поддерживаемые языки
-    'fallback_locale' => 'en',                 // Основной язык для fallback
-    'index_localized_fields' => true,          // Создавать отдельные поля для каждого языка
-    'auto_detect_translatable' => true,        // Автоматически определять translatable поля
-    'translatable_fields' => [                 // Список полей (если auto_detect = false)
-        'title', 'slug', 'short_description', 'specification', 'description', 'content'
-    ],
-],
-```
-
-### Настройки для конкретной модели
-
-Можно переопределить настройки для конкретной модели:
-
-```php
-'App\\Models\\Product' => [
-    'index' => 'products',
-    
-    // Настройки translatable полей для этой модели
-    'translatable' => [
-        'locales' => ['en', 'lv'],             // Только английский и латышский
-        'fallback_locale' => 'en',             // Английский как fallback
-        'index_localized_fields' => true,      // Создавать поля title_en, title_lv и т.д.
-        'auto_detect_translatable' => true,    // Автоматически определять translatable поля
-    ],
-    
-    'searchable_fields' => [
-        'title' => [
-            'type' => 'text',
-            'analyzer' => 'english',
-        ],
-        // Автоматически создаются поля title_en, title_lv и т.д.
-    ],
-],
-```
-
-### Автоматическое определение translatable полей
-
-Пакет автоматически определяет translatable поля, анализируя JSON структуру в базе данных:
-
-```php
-// В базе данных поле title содержит JSON:
-{
-    "en": "Product Name",
-    "lv": "Produkta nosaukums",
-    "ru": "Название продукта"
-}
-
-// Пакет автоматически создаст поля:
-// - title (основное поле с fallback значением)
-// - title_en (английская версия)
-// - title_lv (латышская версия)
-// - title_ru (русская версия)
-```
-
-### Ручная настройка полей
-
-Если автоматическое определение отключено, можно указать поля вручную:
-
-```php
-'searchable_fields' => [
-    'title' => [
-        'type' => 'text',
-        'analyzer' => 'english',
-    ],
-    'title_en' => [
-        'type' => 'text',
-        'analyzer' => 'english',
-    ],
-    'title_lv' => [
-        'type' => 'text',
-        'analyzer' => 'latvian',
-    ],
-],
-```
-
-### Приоритет полей (Boost)
-
-⚠️ **Важно**: В Elasticsearch 8.x `boost` в маппингах индекса устарел и удален. Приоритет полей должен применяться только в поисковых запросах:
-
-```php
-// Правильное использование boost в поисковых запросах
-$results = $elasticSearch->search('App\\Models\\Product', $query, [
-    'boost' => [
-        'name' => 3.0,           // Высокий приоритет для названия
-        'name.exact' => 5.0,     // Очень высокий приоритет для точного совпадения
-        'description' => 1.0,    // Базовый приоритет для описания
-    ],
-    'boost_mode' => 'multiply',  // Режим применения boost
-    'score_mode' => 'sum',       // Режим подсчета скора
-]);
-```
+- `standard` - стандартный анализатор
 
 ## Требования
 
-- PHP 8.1+
-- Laravel 10.0+ или 11.0+
-- Elasticsearch 7.0+
-
-## Лицензия
-
-MIT License
+- PHP 8.0+
+- Laravel 8.0+
+- Elasticsearch 8.18+
+- elasticsearch/elasticsearch ^8.18

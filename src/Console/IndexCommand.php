@@ -330,10 +330,10 @@ Options:
     protected function buildMappingFromSearchableFields(array $searchableFields, array &$properties, array $translatableConfig): void
     {
         foreach ($searchableFields as $field => $fieldConfig) {
-            if (is_string($field)) {
-                // Простое поле
-                $this->addFieldToMapping($field, $properties, $translatableConfig);
-            } elseif (is_array($fieldConfig)) {
+            if (is_string($field) && is_string($fieldConfig)) {
+                // Простое поле (числовой ключ)
+                $this->addFieldToMapping($fieldConfig, $properties, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Relation поля
                 $this->addRelationFieldsToMapping($field, $fieldConfig, $properties, $translatableConfig);
             }
@@ -558,6 +558,8 @@ Options:
             $document[$field] = $this->computeField($record, $fieldConfig);
         }
 
+
+
         return $document;
     }
 
@@ -572,10 +574,10 @@ Options:
     protected function processSearchableFields($record, array $searchableFields, array &$document, array $translatableConfig): void
     {
         foreach ($searchableFields as $field => $fieldConfig) {
-            if (is_string($field)) {
-                // Простое поле
-                $this->processSimpleField($record, $field, $document, $translatableConfig);
-            } elseif (is_array($fieldConfig)) {
+            if (is_string($field) && is_string($fieldConfig)) {
+                // Простое поле (числовой ключ)
+                $this->processSimpleField($record, $fieldConfig, $document, $translatableConfig);
+            } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Relation поле
                 $this->processRelationFields($record, $field, $fieldConfig, $document, $translatableConfig);
             }
@@ -737,7 +739,7 @@ Options:
 
 
     /**
-     * Обрабатывает одиночное relation
+     * Обрабатывает поле relation
      * 
      * @param \Illuminate\Database\Eloquent\Model $relation Модель relation
      * @param string $relationField Имя поля в relation
@@ -745,7 +747,7 @@ Options:
      * @param array $document Текущий документ
      * @param array $translatableConfig Конфигурация translatable полей
      */
-    protected function processSingleRelation($relation, string $relationField, string $fullField, array &$document, array $translatableConfig): void
+    protected function processRelationField($relation, string $relationField, string $fullField, array &$document, array $translatableConfig): void
     {
         // Проверяем, является ли поле translatable
         if ($this->isFieldTranslatable($fullField, $translatableConfig)) {
@@ -790,6 +792,56 @@ Options:
     }
 
     /**
+     * Обрабатывает translatable поля в множественных relations
+     * 
+     * @param \Illuminate\Database\Eloquent\Collection $relations Коллекция relations
+     * @param string $relationField Имя поля в relation
+     * @param string $fullField Полное имя поля
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processTranslatableMultipleRelations($relations, string $relationField, string $fullField, array &$document, array $translatableConfig): void
+    {
+        // Собираем значения для каждого языка
+        $valuesByLocale = [];
+        
+        foreach ($translatableConfig['locales'] as $locale) {
+            $valuesByLocale[$locale] = [];
+        }
+        
+        foreach ($relations as $relation) {
+            // Получаем оригинальное значение и декодируем JSON
+            $originalValue = $relation->getRawOriginal($relationField);
+            $translatableArray = json_decode($originalValue, true);
+            
+            if (is_array($translatableArray)) {
+                // Добавляем значения для каждого языка
+                foreach ($translatableConfig['locales'] as $locale) {
+                    if (isset($translatableArray[$locale])) {
+                        $valuesByLocale[$locale][] = $translatableArray[$locale];
+                    }
+                }
+            } else {
+                // Если декодирование не удалось, добавляем как обычное поле
+                if (array_key_exists($relationField, $relation->getAttributes())) {
+                    $value = $relation->getAttribute($relationField);
+                    // Добавляем во все языки как fallback
+                    foreach ($translatableConfig['locales'] as $locale) {
+                        $valuesByLocale[$locale][] = $value;
+                    }
+                }
+            }
+        }
+        
+        // Создаем поля для каждого языка
+        foreach ($translatableConfig['locales'] as $locale) {
+            if (!empty($valuesByLocale[$locale])) {
+                $document[$fullField . '_' . $locale] = implode(' ', $valuesByLocale[$locale]);
+            }
+        }
+    }
+
+    /**
      * Обрабатывает множественные relations (коллекции)
      * 
      * @param \Illuminate\Database\Eloquent\Collection $relations Коллекция relations
@@ -800,16 +852,22 @@ Options:
      */
     protected function processMultipleRelations($relations, string $relationField, string $fullField, array &$document, array $translatableConfig): void
     {
-        $values = [];
-        
-        foreach ($relations as $relation) {
-            if (array_key_exists($relationField, $relation->getAttributes())) {
-                $values[] = $relation->getAttribute($relationField);
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($fullField, $translatableConfig)) {
+            $this->processTranslatableMultipleRelations($relations, $relationField, $fullField, $document, $translatableConfig);
+        } else {
+            // Обычные поля - объединяем все значения
+            $values = [];
+            
+            foreach ($relations as $relation) {
+                if (array_key_exists($relationField, $relation->getAttributes())) {
+                    $values[] = $relation->getAttribute($relationField);
+                }
             }
-        }
-        
-        if (!empty($values)) {
-            $document[$fullField] = implode(' ', $values);
+            
+            if (!empty($values)) {
+                $document[$fullField] = implode(' ', $values);
+            }
         }
     }
 
@@ -1017,7 +1075,7 @@ Options:
     protected function extractRelationsFromSearchableFields(array $searchableFields, array &$relationsToLoad): void
     {
         foreach ($searchableFields as $field => $fieldConfig) {
-            if (is_array($fieldConfig)) {
+            if (is_string($field) && is_array($fieldConfig)) {
                 // Это relation
                 if (!in_array($field, $relationsToLoad)) {
                     $relationsToLoad[] = $field;

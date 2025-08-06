@@ -461,9 +461,11 @@ return [
                 'translatable_fields' => [                 // Список полей (если auto_detect = false)
                     'title', 'slug', 'short_description', 'specification', 'description',
                     // Примеры с relations:
-                    'category' => ['title', 'description'],
+                    'category' => [
+                        'title', 'description',
+                        'manufacturer' => ['name', 'code']
+                    ],
                     'brand' => ['name', 'description'],
-                    // 'category' => ['manufacturer' => ['name', 'code']] // Вложенные relations
                 ],
             ],
             
@@ -475,11 +477,11 @@ return [
                 'is_active', 'created_at', 'updated_at',
                 
                 // Поля из relations (формат: вложенные массивы)
-                'category' => ['title', 'slug', 'is_active'],
+                'category' => [
+                    'title', 'slug', 'is_active',
+                    'manufacturer' => ['name', 'code']
+                ],
                 'brand' => ['name', 'slug', 'logo'],
-                
-                // Вложенные relations
-                'category' => ['manufacturer' => ['name', 'code']],
                 
                 // Поля из коллекций
                 'images' => ['url', 'alt'],

@@ -1,212 +1,330 @@
-# Новая логика индексации - Изменения
+# Новая логика индексирования
 
 ## Обзор изменений
 
-Обновлена логика индексации для поддержки relations в translatable полях и упрощения конфигурации searchable_fields.
+Исправлена логика индексирования полей в Elasticsearch. Теперь пакет правильно обрабатывает:
+- Простые поля (обычные и translatable)
+- Relation поля (одиночные и множественные)
+- Вложенные relations
+- Многоязычные поля
 
-## Основные изменения
+## Логика обработки полей
 
-### 1. Обновлена конфигурация translatable полей
+### 1. Простые поля
 
-**Было:**
-```php
-'translatable_fields' => [
-    'title', 'slug', 'short_description', 'specification', 'description'
-],
-```
-
-**Стало:**
-```php
-'translatable_fields' => [
-    'title', 'slug', 'short_description', 'specification', 'description',
-    // Поддержка relations
-    'category' => ['title', 'description'],
-    'brand' => ['name', 'description'],
-    // Вложенные relations
-    'category' => ['manufacturer' => ['name', 'code']]
-],
-```
-
-### 2. Упрощена конфигурация searchable_fields
-
-**Было:**
+**Конфигурация:**
 ```php
 'searchable_fields' => [
-    'title' => [
-        'type' => 'text',
-        'analyzer' => 'english',
-        'fields' => [
-            'exact' => ['type' => 'text', 'analyzer' => 'exact_match'],
-            'autocomplete' => ['type' => 'text', 'analyzer' => 'autocomplete'],
+    'title', 'description', 'is_active', 'created_at'
+],
+'translatable' => [
+    'locales' => ['en', 'lv'],
+    'translatable_fields' => ['title', 'description'],
+],
+```
+
+**Данные в БД:**
+```php
+$record = [
+    'title' => '{"en":"Product Name","lv":"Produkta nosaukums"}',
+    'description' => '{"en":"Product description","lv":"Produkta apraksts"}',
+    'is_active' => true,
+    'created_at' => '2024-01-01 00:00:00',
+];
+```
+
+**Результат в Elasticsearch:**
+```json
+{
+    "title_en": "Product Name",
+    "title_lv": "Produkta nosaukums",
+    "description_en": "Product description", 
+    "description_lv": "Produkta apraksts",
+    "is_active": true,
+    "created_at": "2024-01-01 00:00:00"
+}
+```
+
+### 2. Relation поля
+
+**Конфигурация:**
+```php
+'searchable_fields' => [
+    'title', 'description',
+    'category' => ['title', 'description', 'is_active'],
+    'brand' => ['name', 'slug', 'logo'],
+],
+'translatable' => [
+    'locales' => ['en', 'lv'],
+    'translatable_fields' => [
+        'title', 'description',
+        'category' => ['title', 'description'],
+        'brand' => ['name'],
+    ],
+],
+```
+
+**Данные в БД:**
+```php
+$record = [
+    'title' => '{"en":"Product Name","lv":"Produkta nosaukums"}',
+    'category' => [
+        'title' => '{"en":"Electronics","lv":"Elektronika"}',
+        'description' => '{"en":"Electronics category","lv":"Elektronikas kategorija"}',
+        'is_active' => true,
+    ],
+    'brand' => [
+        'name' => '{"en":"Apple Inc","lv":"Apple Inc"}',
+        'slug' => 'apple',
+        'logo' => 'apple-logo.png',
+    ],
+];
+```
+
+**Результат в Elasticsearch:**
+```json
+{
+    "title_en": "Product Name",
+    "title_lv": "Produkta nosaukums",
+    "category.title_en": "Electronics",
+    "category.title_lv": "Elektronika", 
+    "category.description_en": "Electronics category",
+    "category.description_lv": "Elektronikas kategorija",
+    "category.is_active": true,
+    "brand.name_en": "Apple Inc",
+    "brand.name_lv": "Apple Inc",
+    "brand.slug": "apple",
+    "brand.logo": "apple-logo.png"
+}
+```
+
+### 3. Вложенные relations
+
+**Конфигурация:**
+```php
+'searchable_fields' => [
+    'title',
+    'category' => [
+        'title', 'is_active',
+        'manufacturer' => ['name', 'code'],
+    ],
+],
+'translatable' => [
+    'locales' => ['en', 'lv'],
+    'translatable_fields' => [
+        'title',
+        'category' => [
+            'title',
+            'manufacturer' => ['name'],
         ],
     ],
-    'title_en' => ['type' => 'text', 'analyzer' => 'english'],
-    'title_lv' => ['type' => 'text', 'analyzer' => 'latvian'],
-    // ... много других полей
 ],
 ```
 
-**Стало:**
+**Данные в БД:**
+```php
+$record = [
+    'title' => '{"en":"Product Name","lv":"Produkta nosaukums"}',
+    'category' => [
+        'title' => '{"en":"Electronics","lv":"Elektronika"}',
+        'is_active' => true,
+        'manufacturer' => [
+            'name' => '{"en":"Apple Inc","lv":"Apple Inc"}',
+            'code' => 'APPLE',
+        ],
+    ],
+];
+```
+
+**Результат в Elasticsearch:**
+```json
+{
+    "title_en": "Product Name",
+    "title_lv": "Produkta nosaukums",
+    "category.title_en": "Electronics",
+    "category.title_lv": "Elektronika",
+    "category.is_active": true,
+    "category.manufacturer.name_en": "Apple Inc",
+    "category.manufacturer.name_lv": "Apple Inc", 
+    "category.manufacturer.code": "APPLE"
+}
+```
+
+### 4. Множественные relations (коллекции)
+
+**Конфигурация:**
 ```php
 'searchable_fields' => [
-    // Поля текущей модели
-    'title', 'slug', 'short_description', 'specification', 'description',
-    'is_active', 'created_at', 'updated_at',
+    'title',
+    'images' => ['url', 'alt'],
+],
+'translatable' => [
+    'locales' => ['en', 'lv'],
+    'translatable_fields' => [
+        'title',
+        'images' => ['alt'],
+    ],
+],
+```
+
+**Данные в БД:**
+```php
+$record = [
+    'title' => '{"en":"Product Name","lv":"Produkta nosaukums"}',
+    'images' => [
+        [
+            'url' => 'image1.jpg',
+            'alt' => '{"en":"Image 1","lv":"Attēls 1"}',
+        ],
+        [
+            'url' => 'image2.jpg', 
+            'alt' => '{"en":"Image 2","lv":"Attēls 2"}',
+        ],
+    ],
+];
+```
+
+**Результат в Elasticsearch:**
+```json
+{
+    "title_en": "Product Name",
+    "title_lv": "Produkta nosaukums",
+    "images.url": "image1.jpg image2.jpg",
+    "images.alt_en": "Image 1 Image 2",
+    "images.alt_lv": "Attēls 1 Attēls 2"
+}
+```
+
+## Структура конфигурации
+
+### Правильная структура searchable_fields
+
+```php
+'searchable_fields' => [
+    // Простые поля (числовые ключи)
+    'title', 'description', 'is_active', 'created_at',
     
-    // Поля из relations (формат: вложенные массивы)
-    'category' => ['title', 'slug', 'is_active'],
+    // Relation поля (строковые ключи с массивами)
+    'category' => [
+        'title', 'description', 'is_active',
+        'manufacturer' => ['name', 'code']  // Вложенные relations
+    ],
     'brand' => ['name', 'slug', 'logo'],
     
-    // Вложенные relations
-    'category' => ['manufacturer' => ['name', 'code']],
-    
-    // Поля из коллекций
+    // Множественные relations
     'images' => ['url', 'alt'],
 ],
 ```
 
-### 3. Новая логика обработки полей
+### Правильная структура translatable_fields
 
-#### Поддержка relations в translatable полях
-- Поля могут быть указаны как простые строки: `'title'`
-- Поля могут быть указаны как relations: `'category' => ['title', 'description']`
-- Поддержка вложенных relations: `'category' => ['manufacturer' => ['name', 'code']]`
-
-#### Автоматическое определение translatable полей
-- Система автоматически определяет, какие поля из searchable_fields являются translatable
-- Для translatable полей создаются отдельные поля для каждого языка: `title_en`, `title_lv`
-- Для relations: `category.title_en`, `category.title_lv`
-
-#### Поддержка вложенных relations
-- Поддержка полей вида: `category.manufacturer.name`
-- Автоматическая загрузка всех необходимых relations
-- Обработка как одиночных relations, так и коллекций
-
-## Новые методы в IndexCommand
-
-### `processSearchableFields($record, $searchableFields, $document, $translatableConfig)`
-Основной метод для обработки всех полей из searchable_fields.
-
-### `processRelationFields($record, $relationName, $relationFields, $document, $translatableConfig)`
-Обрабатывает поля relations.
-
-### `processSingleRelationFields($relation, $relationName, $relationFields, $document, $translatableConfig)`
-Обрабатывает поля одиночного relation.
-
-### `processMultipleRelationFields($relations, $relationName, $relationFields, $document, $translatableConfig)`
-Обрабатывает поля множественного relation.
-
-### `processNestedRelationFields($relation, $relationPath, $relationFields, $document, $translatableConfig)`
-Обрабатывает вложенные relation поля.
-
-### `processSimpleField($record, $field, $document, $translatableConfig)`
-Обрабатывает простые поля (без relations).
-
-### `processTranslatableSimpleField($record, $field, $document, $translatableConfig)`
-Обрабатывает translatable простые поля.
-
-### `processSingleRelation($relation, $relationField, $fullField, $document, $translatableConfig)`
-Обрабатывает одиночное relation.
-
-### `processTranslatableRelationField($relation, $relationField, $fullField, $document, $translatableConfig)`
-Обрабатывает translatable поле в relation.
-
-### `processMultipleRelations($relations, $relationField, $fullField, $document, $translatableConfig)`
-Обрабатывает множественные relations (коллекции).
-
-### `buildMappingFromSearchableFields($searchableFields, $properties, $translatableConfig)`
-Строит маппинг из searchable_fields.
-
-### `addFieldToMapping($field, $properties, $translatableConfig)`
-Добавляет простое поле в маппинг.
-
-### `addRelationFieldsToMapping($relationName, $relationFields, $properties, $translatableConfig)`
-Добавляет поля relations в маппинг.
-
-### `addNestedRelationFieldsToMapping($relationPath, $relationFields, $properties, $translatableConfig)`
-Добавляет поля вложенных relations в маппинг.
-
-### `isFieldTranslatable($field, $translatableConfig)`
-Определяет, является ли поле translatable.
-
-### `isFieldInTranslatableList($field, $translatableFields)`
-Проверяет, есть ли поле в списке translatable полей.
-
-### `getAnalyzerForLocale($locale)`
-Получает анализатор для конкретного языка.
-
-### `loadRelationsForSearchableFields($query, $config)`
-Загружает relations, указанные в searchable_fields.
-
-### `extractRelationsFromSearchableFields($searchableFields, $relationsToLoad)`
-Извлекает relations из searchable_fields.
-
-### `extractNestedRelations($parentPath, $fields, $relationsToLoad)`
-Извлекает вложенные relations.
-
-## Пример результата индексации
-
-Для конфигурации:
 ```php
-'searchable_fields' => [
-    'title', 'category' => ['title'], 'brand' => ['name'], 'category' => ['manufacturer' => ['name']]
-],
 'translatable_fields' => [
-    'title', 'category' => ['title'], 'brand' => ['name'], 'category' => ['manufacturer' => ['name']]
+    // Простые translatable поля
+    'title', 'description',
+    
+    // Translatable поля в relations
+    'category' => [
+        'title', 'description',
+        'manufacturer' => ['name']  // Вложенные relations
+    ],
+    'brand' => ['name'],
+    
+    // Translatable поля в множественных relations
+    'images' => ['alt'],
 ],
 ```
 
-Результат будет:
+## Исправленные проблемы
+
+1. **Дублирование в конфигурации**: Убрано дублирование `category` в `searchable_fields`
+2. **Неправильная обработка структуры**: Исправлена логика обработки числовых и строковых ключей
+3. **Translatable поля в relations**: Добавлена поддержка translatable полей в relations
+4. **Множественные relations**: Исправлена обработка коллекций с translatable полями
+5. **Вложенные relations**: Добавлена поддержка многоуровневых relations
+
+## Примеры использования
+
+### Простая модель
+
 ```php
-[
-    'title_en' => 'iPhone 15 Pro',
-    'title_lv' => 'iPhone 15 Pro',
-    'category.title_en' => 'Smartphones',
-    'category.title_lv' => 'Viedtālruņi',
-    'brand.name_en' => 'Apple',
-    'brand.name_lv' => 'Apple',
-    'category.manufacturer.name_en' => 'Foxconn',
-    'category.manufacturer.name_lv' => 'Foxconn',
-]
+'App\\Models\\Product' => [
+    'index' => 'products',
+    'translatable' => [
+        'locales' => ['en', 'lv'],
+        'translatable_fields' => ['title', 'description'],
+    ],
+    'searchable_fields' => [
+        'title', 'description', 'is_active', 'price',
+    ],
+],
 ```
 
-## Преимущества новой логики
+### Модель с relations
 
-1. **Упрощенная конфигурация** - searchable_fields теперь простой массив строк
-2. **Поддержка relations** - можно указывать поля из связанных моделей
-3. **Вложенные relations** - поддержка многоуровневых связей
-4. **Автоматическая загрузка** - relations загружаются автоматически
-5. **Единообразное именование** - все поля именуются одинаково
-6. **Поддержка коллекций** - обработка один-ко-многим отношений
-7. **Гибкость translatable полей** - поддержка relations в translatable конфигурации
+```php
+'App\\Models\\Product' => [
+    'index' => 'products',
+    'translatable' => [
+        'locales' => ['en', 'lv'],
+        'translatable_fields' => [
+            'title', 'description',
+            'category' => ['title', 'description'],
+            'brand' => ['name'],
+        ],
+    ],
+    'searchable_fields' => [
+        'title', 'description', 'is_active', 'price',
+        'category' => ['title', 'description', 'is_active'],
+        'brand' => ['name', 'slug', 'logo'],
+    ],
+],
+```
 
-## Обратная совместимость
+### Сложная модель с вложенными relations
 
-⚠️ **ВНИМАНИЕ**: Эти изменения не обратно совместимы с предыдущей версией.
+```php
+'App\\Models\\Product' => [
+    'index' => 'products',
+    'translatable' => [
+        'locales' => ['en', 'lv'],
+        'translatable_fields' => [
+            'title', 'description',
+            'category' => [
+                'title', 'description',
+                'manufacturer' => ['name'],
+            ],
+        ],
+    ],
+    'searchable_fields' => [
+        'title', 'description', 'is_active', 'price',
+        'category' => [
+            'title', 'description', 'is_active',
+            'manufacturer' => ['name', 'code'],
+        ],
+        'images' => ['url', 'alt'],
+    ],
+],
+```
 
-Для миграции на новую логику необходимо:
-1. Обновить конфигурацию translatable_fields для поддержки relations
-2. Изменить searchable_fields на новую структуру с вложенными массивами
-3. Удалить явные языковые поля (title_en, title_lv и т.д.)
-4. Обновить поисковые запросы для работы с новой структурой полей
+## Команды для тестирования
 
-## Финальные изменения в версии 0.2.3
+```bash
+# Создание индексов
+php artisan elastic:index --create-only
 
-### Удалены неиспользуемые методы из IndexCommand:
-- `processTranslatableFields()` - заменен новой логикой
-- `getTranslatableFields()` - больше не используется
-- `isTranslatableField()` - заменен на `isFieldTranslatable()`
-- `getFirstAvailableValue()` - больше не используется
+# Индексация данных
+php artisan elastic:index --model="App\\Models\\Product"
 
-### Обновлен класс ElasticSearch:
-- `getSearchFields()` - теперь поддерживает новую структуру searchable_fields
-- `getAutocompleteFields()` - обновлен для работы с relations
-- `getHighlightFields()` - обновлен для работы с relations
-- Добавлены новые вспомогательные методы для извлечения полей
+# Переиндексация
+php artisan elastic:index --reindex --model="App\\Models\\Product"
+```
 
-### Новая структура полностью поддерживает:
-- Relations через вложенные массивы
-- Вложенные relations (например, category.manufacturer.name)
-- Автоматическое определение translatable полей
-- Автоматическую загрузку relations
-- Единообразное именование полей в индексе 
+## Проверка результатов
+
+После индексации в Elasticsearch должны появиться поля:
+
+- Простые поля: `title_en`, `title_lv`, `is_active`
+- Relation поля: `category.title_en`, `category.title_lv`, `category.is_active`
+- Вложенные relations: `category.manufacturer.name_en`, `category.manufacturer.code`
+- Множественные relations: `images.url`, `images.alt_en`, `images.alt_lv` 

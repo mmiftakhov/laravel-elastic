@@ -422,12 +422,21 @@ Options:
      */
     protected function isFieldTranslatable(string $field, array $translatableConfig): bool
     {
+        // Отладочная информация
+        $this->line("DEBUG: Checking if field '{$field}' is translatable");
+        $this->line("DEBUG: auto_detect_translatable = " . ($translatableConfig['auto_detect_translatable'] ? 'true' : 'false'));
+        $this->line("DEBUG: translatable_fields = " . json_encode($translatableConfig['translatable_fields'] ?? []));
+        
         if (!$translatableConfig['auto_detect_translatable']) {
-            return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+            $result = $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+            $this->line("DEBUG: Result (manual check): " . ($result ? 'true' : 'false'));
+            return $result;
         }
         
         // Для auto_detect проверяем по списку translatable_fields
-        return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+        $result = $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+        $this->line("DEBUG: Result (auto_detect): " . ($result ? 'true' : 'false'));
+        return $result;
     }
 
     /**
@@ -439,28 +448,43 @@ Options:
      */
     protected function isFieldInTranslatableList(string $field, array $translatableFields): bool
     {
+        $this->line("DEBUG: isFieldInTranslatableList - checking field: '{$field}'");
+        $this->line("DEBUG: translatableFields: " . json_encode($translatableFields));
+        
         foreach ($translatableFields as $key => $translatableField) {
+            $this->line("DEBUG: checking translatableField with key '{$key}': " . json_encode($translatableField));
+            
             if (is_string($translatableField)) {
                 // Простое поле (может быть с числовым ключом)
+                $this->line("DEBUG: simple field check: '{$field}' === '{$translatableField}'");
                 if ($field === $translatableField) {
+                    $this->line("DEBUG: MATCH found for simple field!");
                     return true;
                 }
             } elseif (is_array($translatableField)) {
                 // Relation поле - проверяем все поля в relation
                 foreach ($translatableField as $relationField => $relationFields) {
+                    $this->line("DEBUG: relation field check: relationField='{$relationField}', relationFields=" . json_encode($relationFields));
+                    
                     if (is_string($relationFields)) {
                         // Простое поле в relation
                         $expectedField = $relationField . '.' . $relationFields;
+                        $this->line("DEBUG: simple relation check: '{$field}' === '{$expectedField}'");
                         if ($field === $expectedField) {
+                            $this->line("DEBUG: MATCH found for simple relation!");
                             return true;
                         }
                     } elseif (is_array($relationFields)) {
                         // Массив полей в relation
                         foreach ($relationFields as $subFieldKey => $subFieldValue) {
+                            $this->line("DEBUG: subField check: subFieldKey='{$subFieldKey}', subFieldValue=" . json_encode($subFieldValue));
+                            
                             if (is_numeric($subFieldKey) && is_string($subFieldValue)) {
                                 // Простое поле в relation (числовой ключ)
                                 $expectedField = $relationField . '.' . $subFieldValue;
+                                $this->line("DEBUG: numeric key relation check: '{$field}' === '{$expectedField}'");
                                 if ($field === $expectedField) {
+                                    $this->line("DEBUG: MATCH found for numeric key relation!");
                                     return true;
                                 }
                             } elseif (is_string($subFieldKey) && is_array($subFieldValue)) {
@@ -468,7 +492,9 @@ Options:
                                 foreach ($subFieldValue as $nestedField) {
                                     if (is_string($nestedField)) {
                                         $expectedField = $relationField . '.' . $subFieldKey . '.' . $nestedField;
+                                        $this->line("DEBUG: nested relation check: '{$field}' === '{$expectedField}'");
                                         if ($field === $expectedField) {
+                                            $this->line("DEBUG: MATCH found for nested relation!");
                                             return true;
                                         }
                                     }
@@ -480,6 +506,7 @@ Options:
             }
         }
         
+        $this->line("DEBUG: NO MATCH found for field '{$field}'");
         return false;
     }
 
@@ -751,13 +778,18 @@ Options:
      */
     protected function processRelationField($relation, string $relationField, string $fullField, array &$document, array $translatableConfig): void
     {
+        $this->line("DEBUG: processRelationField - relationField: '{$relationField}', fullField: '{$fullField}'");
+        
         // Проверяем, является ли поле translatable
         if ($this->isFieldTranslatable($fullField, $translatableConfig)) {
+            $this->line("DEBUG: Field '{$fullField}' is translatable, processing as translatable");
             $this->processTranslatableRelationField($relation, $relationField, $fullField, $document, $translatableConfig);
         } else {
+            $this->line("DEBUG: Field '{$fullField}' is NOT translatable, processing as regular field");
             // Обычное поле в relation
             if (array_key_exists($relationField, $relation->getAttributes())) {
                 $document[$fullField] = $relation->getAttribute($relationField);
+                $this->line("DEBUG: Added regular field '{$fullField}' = '{$relation->getAttribute($relationField)}'");
             }
         }
     }
@@ -773,22 +805,34 @@ Options:
      */
     protected function processTranslatableRelationField($relation, string $relationField, string $fullField, array &$document, array $translatableConfig): void
     {
+        $this->line("DEBUG: processTranslatableRelationField - relationField: '{$relationField}', fullField: '{$fullField}'");
+        
         // Получаем оригинальное значение и декодируем JSON
         $originalValue = $relation->getRawOriginal($relationField);
+        $this->line("DEBUG: Original value for '{$relationField}': " . json_encode($originalValue));
+        
         $translatableArray = json_decode($originalValue, true);
+        $this->line("DEBUG: Decoded JSON: " . json_encode($translatableArray));
         
         // Проверяем, что декодирование прошло успешно и это массив
         if (is_array($translatableArray)) {
+            $this->line("DEBUG: Successfully decoded as array, processing locales");
             // Добавляем поля для каждого языка
             foreach ($translatableConfig['locales'] as $locale) {
                 if (isset($translatableArray[$locale])) {
-                    $document[$fullField . '_' . $locale] = $translatableArray[$locale];
+                    $localizedField = $fullField . '_' . $locale;
+                    $document[$localizedField] = $translatableArray[$locale];
+                    $this->line("DEBUG: Added translatable field '{$localizedField}' = '{$translatableArray[$locale]}'");
+                } else {
+                    $this->line("DEBUG: Locale '{$locale}' not found in translatable array");
                 }
             }
         } else {
+            $this->line("DEBUG: Failed to decode as array, treating as regular field");
             // Если декодирование не удалось, добавляем как обычное поле
             if (array_key_exists($relationField, $relation->getAttributes())) {
                 $document[$fullField] = $relation->getAttribute($relationField);
+                $this->line("DEBUG: Added as regular field '{$fullField}' = '{$relation->getAttribute($relationField)}'");
             }
         }
     }

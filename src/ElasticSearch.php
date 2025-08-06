@@ -253,8 +253,8 @@ class ElasticSearch
     /**
      * Получает поля для поиска из конфигурации
      * 
-     * Поддерживает multi-field mapping для различных анализаторов
-     * и boost значения из опций поиска (не из маппингов).
+     * Поддерживает новую структуру searchable_fields с relations
+     * и boost значения из опций поиска.
      * 
      * @param array $config Конфигурация модели
      * @param array|null $fields Поля для поиска (если указаны)
@@ -277,29 +277,83 @@ class ElasticSearch
 
         $searchFields = [];
         
-        foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
-            // Используем boost из опций поиска, а не из маппинга
-            $fieldBoost = $boost[$field] ?? 1.0;
-            $searchFields[] = $field . '^' . $fieldBoost;
-
-            // Добавляем multi-field mappings
-            if (isset($fieldConfig['fields'])) {
-                foreach ($fieldConfig['fields'] as $subField => $subFieldConfig) {
-                    $subFieldName = $field . '.' . $subField;
-                    $subFieldBoost = $boost[$subFieldName] ?? 1.0;
-                    $searchFields[] = $subFieldName . '^' . $subFieldBoost;
-                }
-            }
-        }
+        $this->extractSearchFieldsFromConfig($config['searchable_fields'] ?? [], $searchFields, $boost);
 
         return $searchFields;
     }
 
     /**
+     * Извлекает поля для поиска из конфигурации
+     * 
+     * @param array $searchableFields Поля для поиска
+     * @param array $searchFields Массив для заполнения полей
+     * @param array|null $boost Boost значения
+     */
+    protected function extractSearchFieldsFromConfig(array $searchableFields, array &$searchFields, ?array $boost): void
+    {
+        foreach ($searchableFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле
+                $fieldBoost = $boost[$field] ?? 1.0;
+                $searchFields[] = $field . '^' . $fieldBoost;
+            } elseif (is_array($fieldConfig)) {
+                // Relation поля
+                $this->extractRelationSearchFields($field, $fieldConfig, $searchFields, $boost);
+            }
+        }
+    }
+
+    /**
+     * Извлекает поля relations для поиска
+     * 
+     * @param string $relationName Имя relation
+     * @param array $relationFields Поля relation
+     * @param array $searchFields Массив для заполнения полей
+     * @param array|null $boost Boost значения
+     */
+    protected function extractRelationSearchFields(string $relationName, array $relationFields, array &$searchFields, ?array $boost): void
+    {
+        foreach ($relationFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле в relation
+                $fullField = $relationName . '.' . $field;
+                $fieldBoost = $boost[$fullField] ?? 1.0;
+                $searchFields[] = $fullField . '^' . $fieldBoost;
+            } elseif (is_array($fieldConfig)) {
+                // Вложенное relation
+                $this->extractNestedRelationSearchFields($relationName . '.' . $field, $fieldConfig, $searchFields, $boost);
+            }
+        }
+    }
+
+    /**
+     * Извлекает поля вложенных relations для поиска
+     * 
+     * @param string $relationPath Путь к relation
+     * @param array $relationFields Поля relation
+     * @param array $searchFields Массив для заполнения полей
+     * @param array|null $boost Boost значения
+     */
+    protected function extractNestedRelationSearchFields(string $relationPath, array $relationFields, array &$searchFields, ?array $boost): void
+    {
+        foreach ($relationFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле во вложенном relation
+                $fullField = $relationPath . '.' . $field;
+                $fieldBoost = $boost[$fullField] ?? 1.0;
+                $searchFields[] = $fullField . '^' . $fieldBoost;
+            } elseif (is_array($fieldConfig)) {
+                // Еще более вложенное relation
+                $this->extractNestedRelationSearchFields($relationPath . '.' . $field, $fieldConfig, $searchFields, $boost);
+            }
+        }
+    }
+
+    /**
      * Получает поля для автодополнения
      * 
-     * Ищет специальные поля с autocomplete анализатором
-     * или использует обычные поля без boost значений из маппинга.
+     * Извлекает все поля из новой структуры searchable_fields
+     * для использования в автодополнении.
      * 
      * @param array $config Конфигурация модели
      * @return array Массив полей для автодополнения
@@ -308,24 +362,75 @@ class ElasticSearch
     {
         $autocompleteFields = [];
         
-        foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
-            if (isset($fieldConfig['fields']['autocomplete'])) {
-                // Используем поле autocomplete без boost из маппинга
-                $autocompleteFields[] = $field . '.autocomplete';
-            } else {
-                // Используем обычное поле без boost из маппинга
-                $autocompleteFields[] = $field;
-            }
-        }
+        $this->extractAutocompleteFieldsFromConfig($config['searchable_fields'] ?? [], $autocompleteFields);
 
         return $autocompleteFields;
     }
 
     /**
+     * Извлекает поля для автодополнения из конфигурации
+     * 
+     * @param array $searchableFields Поля для поиска
+     * @param array $autocompleteFields Массив для заполнения полей
+     */
+    protected function extractAutocompleteFieldsFromConfig(array $searchableFields, array &$autocompleteFields): void
+    {
+        foreach ($searchableFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле
+                $autocompleteFields[] = $field;
+            } elseif (is_array($fieldConfig)) {
+                // Relation поля
+                $this->extractRelationAutocompleteFields($field, $fieldConfig, $autocompleteFields);
+            }
+        }
+    }
+
+    /**
+     * Извлекает поля relations для автодополнения
+     * 
+     * @param string $relationName Имя relation
+     * @param array $relationFields Поля relation
+     * @param array $autocompleteFields Массив для заполнения полей
+     */
+    protected function extractRelationAutocompleteFields(string $relationName, array $relationFields, array &$autocompleteFields): void
+    {
+        foreach ($relationFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле в relation
+                $autocompleteFields[] = $relationName . '.' . $field;
+            } elseif (is_array($fieldConfig)) {
+                // Вложенное relation
+                $this->extractNestedRelationAutocompleteFields($relationName . '.' . $field, $fieldConfig, $autocompleteFields);
+            }
+        }
+    }
+
+    /**
+     * Извлекает поля вложенных relations для автодополнения
+     * 
+     * @param string $relationPath Путь к relation
+     * @param array $relationFields Поля relation
+     * @param array $autocompleteFields Массив для заполнения полей
+     */
+    protected function extractNestedRelationAutocompleteFields(string $relationPath, array $relationFields, array &$autocompleteFields): void
+    {
+        foreach ($relationFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле во вложенном relation
+                $autocompleteFields[] = $relationPath . '.' . $field;
+            } elseif (is_array($fieldConfig)) {
+                // Еще более вложенное relation
+                $this->extractNestedRelationAutocompleteFields($relationPath . '.' . $field, $fieldConfig, $autocompleteFields);
+            }
+        }
+    }
+
+    /**
      * Получает поля для подсветки результатов
      * 
-     * Настраивает подсветку для текстовых полей с оптимальными параметрами
-     * для отображения фрагментов текста с совпадениями.
+     * Настраивает подсветку для всех текстовых полей из новой структуры
+     * searchable_fields с оптимальными параметрами.
      * 
      * @param array $config Конфигурация модели
      * @return array Конфигурация подсветки для Elasticsearch
@@ -334,17 +439,80 @@ class ElasticSearch
     {
         $highlightFields = [];
         
-        foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
-            if ($fieldConfig['type'] === 'text') {
+        $this->extractHighlightFieldsFromConfig($config['searchable_fields'] ?? [], $highlightFields);
+
+        return $highlightFields;
+    }
+
+    /**
+     * Извлекает поля для подсветки из конфигурации
+     * 
+     * @param array $searchableFields Поля для поиска
+     * @param array $highlightFields Массив для заполнения полей подсветки
+     */
+    protected function extractHighlightFieldsFromConfig(array $searchableFields, array &$highlightFields): void
+    {
+        foreach ($searchableFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле
                 $highlightFields[$field] = [
                     'type' => 'unified',
                     'fragment_size' => 150,
                     'number_of_fragments' => 3,
                 ];
+            } elseif (is_array($fieldConfig)) {
+                // Relation поля
+                $this->extractRelationHighlightFields($field, $fieldConfig, $highlightFields);
             }
         }
+    }
 
-        return $highlightFields;
+    /**
+     * Извлекает поля relations для подсветки
+     * 
+     * @param string $relationName Имя relation
+     * @param array $relationFields Поля relation
+     * @param array $highlightFields Массив для заполнения полей подсветки
+     */
+    protected function extractRelationHighlightFields(string $relationName, array $relationFields, array &$highlightFields): void
+    {
+        foreach ($relationFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле в relation
+                $highlightFields[$relationName . '.' . $field] = [
+                    'type' => 'unified',
+                    'fragment_size' => 150,
+                    'number_of_fragments' => 3,
+                ];
+            } elseif (is_array($fieldConfig)) {
+                // Вложенное relation
+                $this->extractNestedRelationHighlightFields($relationName . '.' . $field, $fieldConfig, $highlightFields);
+            }
+        }
+    }
+
+    /**
+     * Извлекает поля вложенных relations для подсветки
+     * 
+     * @param string $relationPath Путь к relation
+     * @param array $relationFields Поля relation
+     * @param array $highlightFields Массив для заполнения полей подсветки
+     */
+    protected function extractNestedRelationHighlightFields(string $relationPath, array $relationFields, array &$highlightFields): void
+    {
+        foreach ($relationFields as $field => $fieldConfig) {
+            if (is_string($field)) {
+                // Простое поле во вложенном relation
+                $highlightFields[$relationPath . '.' . $field] = [
+                    'type' => 'unified',
+                    'fragment_size' => 150,
+                    'number_of_fragments' => 3,
+                ];
+            } elseif (is_array($fieldConfig)) {
+                // Еще более вложенное relation
+                $this->extractNestedRelationHighlightFields($relationPath . '.' . $field, $fieldConfig, $highlightFields);
+            }
+        }
     }
 
     /**

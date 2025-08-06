@@ -468,22 +468,21 @@ return [
             ],
             
             // Поля для поиска - определяют маппинг полей в Elasticsearch и индексируются
-            // Поддерживает relations в формате "relation.field" или "relation.nested.field"
-            // Каждое поле может иметь свой тип, анализатор и настройки
+            // Поддерживает relations через вложенные массивы
             'searchable_fields' => [
                 // Поля текущей модели
                 'title', 'slug', 'short_description', 'specification', 'description',
                 'is_active', 'created_at', 'updated_at',
                 
-                // Поля из relations (формат: "relation.field")
-                'category.title', 'category.slug', 'category.is_active',
-                'brand.name', 'brand.slug', 'brand.logo',
+                // Поля из relations (формат: вложенные массивы)
+                'category' => ['title', 'slug', 'is_active'],
+                'brand' => ['name', 'slug', 'logo'],
                 
-                // Вложенные relations (формат: "relation.nested.field")
-                // 'category.manufacturer.name', 'category.manufacturer.code',
+                // Вложенные relations
+                'category' => ['manufacturer' => ['name', 'code']],
                 
-                // Поля из коллекций (если нужно)
-                'images.url', 'images.alt',
+                // Поля из коллекций
+                'images' => ['url', 'alt'],
             ],
             
 

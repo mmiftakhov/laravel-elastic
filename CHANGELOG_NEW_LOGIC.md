@@ -53,15 +53,15 @@
     'title', 'slug', 'short_description', 'specification', 'description',
     'is_active', 'created_at', 'updated_at',
     
-    // Поля из relations (формат: "relation.field")
-    'category.title', 'category.slug', 'category.is_active',
-    'brand.name', 'brand.slug', 'brand.logo',
+    // Поля из relations (формат: вложенные массивы)
+    'category' => ['title', 'slug', 'is_active'],
+    'brand' => ['name', 'slug', 'logo'],
     
-    // Вложенные relations (формат: "relation.nested.field")
-    'category.manufacturer.name', 'category.manufacturer.code',
+    // Вложенные relations
+    'category' => ['manufacturer' => ['name', 'code']],
     
     // Поля из коллекций
-    'images.url', 'images.alt',
+    'images' => ['url', 'alt'],
 ],
 ```
 
@@ -84,23 +84,26 @@
 
 ## Новые методы в IndexCommand
 
-### `processField($record, $field, $document, $translatableConfig)`
-Основной метод для обработки отдельного поля.
+### `processSearchableFields($record, $searchableFields, $document, $translatableConfig)`
+Основной метод для обработки всех полей из searchable_fields.
+
+### `processRelationFields($record, $relationName, $relationFields, $document, $translatableConfig)`
+Обрабатывает поля relations.
+
+### `processSingleRelationFields($relation, $relationName, $relationFields, $document, $translatableConfig)`
+Обрабатывает поля одиночного relation.
+
+### `processMultipleRelationFields($relations, $relationName, $relationFields, $document, $translatableConfig)`
+Обрабатывает поля множественного relation.
+
+### `processNestedRelationFields($relation, $relationPath, $relationFields, $document, $translatableConfig)`
+Обрабатывает вложенные relation поля.
 
 ### `processSimpleField($record, $field, $document, $translatableConfig)`
 Обрабатывает простые поля (без relations).
 
 ### `processTranslatableSimpleField($record, $field, $document, $translatableConfig)`
 Обрабатывает translatable простые поля.
-
-### `processRelationField($record, $field, $document, $translatableConfig)`
-Обрабатывает поля с relations.
-
-### `processSimpleRelationField($record, $relationName, $relationField, $fullField, $document, $translatableConfig)`
-Обрабатывает простые relation поля (один уровень).
-
-### `processNestedRelationField($record, $parts, $fullField, $document, $translatableConfig)`
-Обрабатывает вложенные relation поля (несколько уровней).
 
 ### `processSingleRelation($relation, $relationField, $fullField, $document, $translatableConfig)`
 Обрабатывает одиночное relation.
@@ -110,6 +113,18 @@
 
 ### `processMultipleRelations($relations, $relationField, $fullField, $document, $translatableConfig)`
 Обрабатывает множественные relations (коллекции).
+
+### `buildMappingFromSearchableFields($searchableFields, $properties, $translatableConfig)`
+Строит маппинг из searchable_fields.
+
+### `addFieldToMapping($field, $properties, $translatableConfig)`
+Добавляет простое поле в маппинг.
+
+### `addRelationFieldsToMapping($relationName, $relationFields, $properties, $translatableConfig)`
+Добавляет поля relations в маппинг.
+
+### `addNestedRelationFieldsToMapping($relationPath, $relationFields, $properties, $translatableConfig)`
+Добавляет поля вложенных relations в маппинг.
 
 ### `isFieldTranslatable($field, $translatableConfig)`
 Определяет, является ли поле translatable.
@@ -123,12 +138,18 @@
 ### `loadRelationsForSearchableFields($query, $config)`
 Загружает relations, указанные в searchable_fields.
 
+### `extractRelationsFromSearchableFields($searchableFields, $relationsToLoad)`
+Извлекает relations из searchable_fields.
+
+### `extractNestedRelations($parentPath, $fields, $relationsToLoad)`
+Извлекает вложенные relations.
+
 ## Пример результата индексации
 
 Для конфигурации:
 ```php
 'searchable_fields' => [
-    'title', 'category.title', 'brand.name', 'category.manufacturer.name'
+    'title', 'category' => ['title'], 'brand' => ['name'], 'category' => ['manufacturer' => ['name']]
 ],
 'translatable_fields' => [
     'title', 'category' => ['title'], 'brand' => ['name'], 'category' => ['manufacturer' => ['name']]
@@ -164,7 +185,28 @@
 ⚠️ **ВНИМАНИЕ**: Эти изменения не обратно совместимы с предыдущей версией.
 
 Для миграции на новую логику необходимо:
-1. Обновить конфигурацию translatable_fields
-2. Упростить searchable_fields до массива строк
+1. Обновить конфигурацию translatable_fields для поддержки relations
+2. Изменить searchable_fields на новую структуру с вложенными массивами
 3. Удалить явные языковые поля (title_en, title_lv и т.д.)
-4. Обновить поисковые запросы для работы с новой структурой полей 
+4. Обновить поисковые запросы для работы с новой структурой полей
+
+## Финальные изменения в версии 0.2.3
+
+### Удалены неиспользуемые методы из IndexCommand:
+- `processTranslatableFields()` - заменен новой логикой
+- `getTranslatableFields()` - больше не используется
+- `isTranslatableField()` - заменен на `isFieldTranslatable()`
+- `getFirstAvailableValue()` - больше не используется
+
+### Обновлен класс ElasticSearch:
+- `getSearchFields()` - теперь поддерживает новую структуру searchable_fields
+- `getAutocompleteFields()` - обновлен для работы с relations
+- `getHighlightFields()` - обновлен для работы с relations
+- Добавлены новые вспомогательные методы для извлечения полей
+
+### Новая структура полностью поддерживает:
+- Relations через вложенные массивы
+- Вложенные relations (например, category.manufacturer.name)
+- Автоматическое определение translatable полей
+- Автоматическую загрузку relations
+- Единообразное именование полей в индексе 

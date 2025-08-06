@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.9] - 2024-12-19
+
+### Fixed
+- Fixed translatable field detection logic in `isFieldInTranslatableList` method to properly handle numeric keys in translatable_fields configuration
+- Resolved issue where relation fields like `category.title` were not being recognized as translatable due to incorrect array key handling
+
 ## [0.2.8] - 2024-12-19
 
 ### Added

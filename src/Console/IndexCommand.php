@@ -451,11 +451,11 @@ Options:
         $this->line("DEBUG: isFieldInTranslatableList - checking field: '{$field}'");
         $this->line("DEBUG: translatableFields: " . json_encode($translatableFields));
         
-        foreach ($translatableFields as $translatableField) {
-            $this->line("DEBUG: checking translatableField: " . json_encode($translatableField));
+        foreach ($translatableFields as $key => $translatableField) {
+            $this->line("DEBUG: checking translatableField with key '{$key}': " . json_encode($translatableField));
             
             if (is_string($translatableField)) {
-                // Простое поле
+                // Простое поле (может быть с числовым ключом)
                 $this->line("DEBUG: simple field check: '{$field}' === '{$translatableField}'");
                 if ($field === $translatableField) {
                     $this->line("DEBUG: MATCH found for simple field!");

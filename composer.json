@@ -1,7 +1,7 @@
 {
     "name": "maratmiftahov/laravel-elastic",
     "description": "Laravel wrapper for Elasticsearch",
-    "version": "0.4.2",
+    "version": "0.4.3",
     "type": "library",
     "license": "MIT",
     "autoload": {

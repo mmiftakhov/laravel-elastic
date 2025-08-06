@@ -64,6 +64,7 @@ class ElasticSearch
      *                       - sort: сортировка результатов
      *                       - analyzer: анализатор для поиска
      *                       - highlight: включить подсветку
+     *                       - load_from_db: загружать ли данные из БД (по умолчанию true)
      * @return Collection Коллекция результатов с метаданными
      * @throws \InvalidArgumentException Если модель не настроена
      * @throws \RuntimeException При ошибке поиска
@@ -87,7 +88,9 @@ class ElasticSearch
         try {
             // Выполняем поиск через API Elasticsearch 8.x
             $response = $this->elasticsearch->search($searchParams);
-            $results = $this->formatResults($response->asArray(), $config);
+            
+            // Передаем опцию load_from_db в formatResults
+            $results = $this->formatResults($response->asArray(), $config, $options);
             
             $endTime = microtime(true);
             $executionTime = ($endTime - $startTime) * 1000;
@@ -97,7 +100,8 @@ class ElasticSearch
                 'query' => $query,
                 'execution_time_ms' => round($executionTime, 2),
                 'results_count' => $results->count(),
-                'total_hits' => $results->get('_meta.total', 0)
+                'total_hits' => $results->get('_meta.total', 0),
+                'load_from_db' => $options['load_from_db'] ?? true
             ]);
             
             return $results;
@@ -763,43 +767,74 @@ class ElasticSearch
      * 
      * @param array $response Ответ от Elasticsearch
      * @param array $config Конфигурация модели
+     * @param array $options Дополнительные опции
      * @return Collection Коллекция результатов с метаданными
      */
-    protected function formatResults(array $response, array $config): Collection
+    protected function formatResults(array $response, array $config, array $options = []): Collection
     {
         $hits = $response['hits']['hits'] ?? [];
         $total = $response['hits']['total']['value'] ?? 0;
         $maxScore = $response['hits']['max_score'] ?? 0;
 
-        // Извлекаем ID из результатов Elasticsearch
-        $ids = collect($hits)->pluck('_id')->toArray();
-        $scores = collect($hits)->pluck('_score', '_id')->toArray();
-        $highlights = collect($hits)->pluck('highlight', '_id')->toArray();
+        // Извлекаем ID из результатов Elasticsearch (оптимизированно)
+        $ids = [];
+        $scores = [];
+        $highlights = [];
+        
+        foreach ($hits as $hit) {
+            $id = $hit['_id'];
+            $ids[] = $id;
+            $scores[$id] = $hit['_score'] ?? 0;
+            $highlights[$id] = $hit['highlight'] ?? [];
+        }
 
         // Если есть ID и настроены return_fields, загружаем данные из БД
         if (!empty($ids) && isset($config['return_fields'])) {
-            $dbResults = $this->loadDataFromDatabase($ids, $config);
-            
-            // Объединяем данные из БД с результатами Elasticsearch
-            $results = collect($dbResults)->map(function ($item) use ($scores, $highlights) {
-                $id = $item['id'];
+            $loadFromDb = $options['load_from_db'] ?? true;
+            if ($loadFromDb) {
+                $dbResults = $this->loadDataFromDatabase($ids, $config);
                 
-                // Добавляем скор из Elasticsearch
-                $item['_score'] = $scores[$id] ?? 0;
-                $item['_id'] = $id;
-                
-                // Добавляем подсветку
-                if (isset($highlights[$id])) {
-                    foreach ($highlights[$id] as $field => $fragments) {
-                        $item['highlight_' . $field] = implode(' ... ', $fragments);
+                // Объединяем данные из БД с результатами Elasticsearch
+                $results = [];
+                foreach ($dbResults as $item) {
+                    $id = $item['id'];
+                    
+                    // Добавляем скор из Elasticsearch
+                    $item['_score'] = $scores[$id] ?? 0;
+                    $item['_id'] = $id;
+                    
+                    // Добавляем подсветку
+                    if (isset($highlights[$id])) {
+                        foreach ($highlights[$id] as $field => $fragments) {
+                            $item['highlight_' . $field] = implode(' ... ', $fragments);
+                        }
                     }
+                    
+                    $results[] = $item;
                 }
-                
-                return $item;
-            });
+            } else {
+                // Если load_from_db false, возвращаем только данные из Elasticsearch
+                $results = [];
+                foreach ($hits as $hit) {
+                    $source = $hit['_source'] ?? [];
+                    $highlight = $hit['highlight'] ?? [];
+
+                    // Добавляем подсветку к исходным данным
+                    foreach ($highlight as $field => $fragments) {
+                        $source['highlight_' . $field] = implode(' ... ', $fragments);
+                    }
+
+                    // Добавляем скор и ID
+                    $source['_score'] = $hit['_score'];
+                    $source['_id'] = $hit['_id'];
+
+                    $results[] = $source;
+                }
+            }
         } else {
             // Fallback: возвращаем только данные из Elasticsearch
-            $results = collect($hits)->map(function ($hit) use ($config) {
+            $results = [];
+            foreach ($hits as $hit) {
                 $source = $hit['_source'] ?? [];
                 $highlight = $hit['highlight'] ?? [];
 
@@ -812,18 +847,19 @@ class ElasticSearch
                 $source['_score'] = $hit['_score'];
                 $source['_id'] = $hit['_id'];
 
-                return $source;
-            });
+                $results[] = $source;
+            }
         }
 
-        // Добавляем метаданные как свойство коллекции
-        $results->put('_meta', [
+        // Создаем коллекцию и добавляем метаданные
+        $collection = collect($results);
+        $collection->put('_meta', [
             'total' => $total,
             'max_score' => $maxScore,
             'took' => $response['took'] ?? 0,
         ]);
 
-        return $results;
+        return $collection;
     }
 
     /**
@@ -865,82 +901,87 @@ class ElasticSearch
             return [];
         }
 
-        $returnFields = $config['return_fields'] ?? [];
+        // Кэшируем результаты запроса к БД
+        $cacheKey = 'db_results_' . $modelClass . '_' . md5(serialize($ids) . serialize($config['return_fields'] ?? []));
         
-        // Строим запрос с учетом return_fields
-        $query = $modelClass::query();
-        
-        // Разделяем поля на основные и отношения
-        $mainFields = [];
-        $relations = [];
-        
-        foreach ($returnFields as $key => $value) {
-            if (is_string($value)) {
-                // Обычное поле основной модели
-                $mainFields[] = $value;
-            } elseif (is_array($value)) {
-                // Отношение
-                $relations[$key] = $this->buildRelationQuery($value);
-            }
-        }
-        
-        // Всегда делаем select для основных полей, но если есть relations,
-        // добавляем в select все foreign keys, необходимые для загрузки relations
-        if (!empty($mainFields)) {
-            $selectFields = $mainFields;
+        return Cache::remember($cacheKey, 3600, function() use ($ids, $config, $modelClass, $startTime) {
+            $returnFields = $config['return_fields'] ?? [];
             
-            // Если есть relations, добавляем foreign keys
-            if (!empty($relations)) {
-                $foreignKeys = $this->getForeignKeysForRelations($modelClass, array_keys($relations));
-                $selectFields = array_merge($selectFields, $foreignKeys);
-            }
+            // Строим запрос с учетом return_fields
+            $query = $modelClass::query();
             
-            $query->select($selectFields);
-        }
-        
-        // Добавляем отношения с их собственными select
-        foreach ($relations as $relation => $relationConfig) {
-            $query->with([$relation => function ($query) use ($relationConfig) {
-                if (isset($relationConfig['select']) && !empty($relationConfig['select'])) {
-                    $query->select($relationConfig['select']);
+            // Разделяем поля на основные и отношения
+            $mainFields = [];
+            $relations = [];
+            
+            foreach ($returnFields as $key => $value) {
+                if (is_string($value)) {
+                    // Обычное поле основной модели
+                    $mainFields[] = $value;
+                } elseif (is_array($value)) {
+                    // Отношение
+                    $relations[$key] = $this->buildRelationQuery($value);
                 }
-                if (isset($relationConfig['with'])) {
-                    foreach ($relationConfig['with'] as $nestedRelation => $nestedConfig) {
-                        $query->with([$nestedRelation => function ($nestedQuery) use ($nestedConfig) {
-                            if (isset($nestedConfig['select']) && !empty($nestedConfig['select'])) {
-                                $nestedQuery->select($nestedConfig['select']);
-                            }
-                        }]);
+            }
+            
+            // Всегда делаем select для основных полей, но если есть relations,
+            // добавляем в select все foreign keys, необходимые для загрузки relations
+            if (!empty($mainFields)) {
+                $selectFields = $mainFields;
+                
+                // Если есть relations, добавляем foreign keys
+                if (!empty($relations)) {
+                    $foreignKeys = $this->getForeignKeysForRelations($modelClass, array_keys($relations));
+                    $selectFields = array_merge($selectFields, $foreignKeys);
+                }
+                
+                $query->select($selectFields);
+            }
+            
+            // Добавляем отношения с их собственными select
+            foreach ($relations as $relation => $relationConfig) {
+                $query->with([$relation => function ($query) use ($relationConfig) {
+                    if (isset($relationConfig['select']) && !empty($relationConfig['select'])) {
+                        $query->select($relationConfig['select']);
                     }
-                }
-            }]);
-        }
-        
-        // Фильтруем по ID и сохраняем порядок из Elasticsearch
-        $query->whereIn('id', $ids);
-        
-        // Получаем результаты
-        $results = $query->get()->keyBy('id')->toArray();
-        
-        // Сортируем в том же порядке, что и в Elasticsearch
-        $orderedResults = [];
-        foreach ($ids as $id) {
-            if (isset($results[$id])) {
-                $orderedResults[] = $results[$id];
+                    if (isset($relationConfig['with'])) {
+                        foreach ($relationConfig['with'] as $nestedRelation => $nestedConfig) {
+                            $query->with([$nestedRelation => function ($nestedQuery) use ($nestedConfig) {
+                                if (isset($nestedConfig['select']) && !empty($nestedConfig['select'])) {
+                                    $nestedQuery->select($nestedConfig['select']);
+                                }
+                            }]);
+                        }
+                    }
+                }]);
             }
-        }
-        
-        $endTime = microtime(true);
-        $executionTime = ($endTime - $startTime) * 1000;
-        
-        Log::info("Database data loading completed", [
-            'model' => $modelClass,
-            'ids_count' => count($ids),
-            'results_count' => count($orderedResults),
-            'execution_time_ms' => round($executionTime, 2)
-        ]);
-        
-        return $orderedResults;
+            
+            // Фильтруем по ID и сохраняем порядок из Elasticsearch
+            $query->whereIn('id', $ids);
+            
+            // Получаем результаты
+            $results = $query->get()->keyBy('id')->toArray();
+            
+            // Сортируем в том же порядке, что и в Elasticsearch
+            $orderedResults = [];
+            foreach ($ids as $id) {
+                if (isset($results[$id])) {
+                    $orderedResults[] = $results[$id];
+                }
+            }
+            
+            $endTime = microtime(true);
+            $executionTime = ($endTime - $startTime) * 1000;
+            
+            Log::info("Database data loading completed", [
+                'model' => $modelClass,
+                'ids_count' => count($ids),
+                'results_count' => count($orderedResults),
+                'execution_time_ms' => round($executionTime, 2)
+            ]);
+            
+            return $orderedResults;
+        });
     }
 
     /**
@@ -951,20 +992,25 @@ class ElasticSearch
      */
     protected function buildRelationQuery(array $relationFields): array
     {
-        $config = ['select' => [], 'with' => []];
+        // Кэшируем результат построения запроса для relations
+        $cacheKey = 'relation_query_' . md5(serialize($relationFields));
         
-        foreach ($relationFields as $key => $value) {
-            if (is_string($value)) {
-                // Обычное поле отношения
-                $config['select'][] = $value;
-            } elseif (is_array($value)) {
-                // Вложенное отношение
-                $nestedConfig = $this->buildRelationQuery($value);
-                $config['with'][$key] = $nestedConfig;
+        return Cache::remember($cacheKey, 3600, function() use ($relationFields) {
+            $config = ['select' => [], 'with' => []];
+            
+            foreach ($relationFields as $key => $value) {
+                if (is_string($value)) {
+                    // Обычное поле отношения
+                    $config['select'][] = $value;
+                } elseif (is_array($value)) {
+                    // Вложенное отношение
+                    $nestedConfig = $this->buildRelationQuery($value);
+                    $config['with'][$key] = $nestedConfig;
+                }
             }
-        }
-        
-        return $config;
+            
+            return $config;
+        });
     }
 
     /**
@@ -975,15 +1021,20 @@ class ElasticSearch
      */
     protected function getModelClassFromConfig(array $config): ?string
     {
-        $models = Config::get('elastic.models', []);
+        // Кэшируем результат поиска модели по конфигурации
+        $cacheKey = 'model_class_' . md5(serialize($config));
         
-        foreach ($models as $modelClass => $modelConfig) {
-            if ($modelConfig === $config) {
-                return $modelClass;
+        return Cache::remember($cacheKey, 3600, function() use ($config) {
+            $models = Config::get('elastic.models', []);
+            
+            foreach ($models as $modelClass => $modelConfig) {
+                if ($modelConfig === $config) {
+                    return $modelClass;
+                }
             }
-        }
-        
-        return null;
+            
+            return null;
+        });
     }
 
     /**
@@ -1061,13 +1112,18 @@ class ElasticSearch
      */
     protected function indexExists(string $indexName): bool
     {
-        try {
-            // Используем API Elasticsearch 8.x для проверки существования индекса
-            $response = $this->elasticsearch->indices()->exists(['index' => $indexName]);
-            return $response->getStatusCode() === 200;
-        } catch (\Exception $e) {
-            return false;
-        }
+        // Кэшируем результат проверки существования индекса на 5 минут
+        $cacheKey = 'index_exists_' . $indexName;
+        
+        return Cache::remember($cacheKey, 3600, function() use ($indexName) {
+            try {
+                // Используем API Elasticsearch 8.x для проверки существования индекса
+                $response = $this->elasticsearch->indices()->exists(['index' => $indexName]);
+                return $response->getStatusCode() === 200;
+            } catch (\Exception $e) {
+                return false;
+            }
+        });
     }
 
     /**

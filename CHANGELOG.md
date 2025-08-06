@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2024-12-19
+
+### Fixed
+- **CRITICAL FIX**: Fixed translatable field detection logic to properly handle mixed structure in translatable_fields configuration
+- Resolved issue where relation fields like `category.title` were not being recognized as translatable
+- Added comprehensive logic to handle numeric keys in relation field arrays
+- Removed debug logging from production code
+
+### Breaking Changes
+- This version fixes a critical bug in translatable field detection. Update from any previous version to ensure proper handling of translatable relation fields.
+
+### Features
+- Full support for translatable relation fields (e.g., `category.title_en`, `category.title_lv`)
+- Proper JSON decoding and processing of translatable fields from database
+- Support for nested relations with translatable fields
+
 ## [0.3.5] - 2024-12-19
 
 ### Fixed

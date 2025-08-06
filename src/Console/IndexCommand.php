@@ -562,6 +562,29 @@ Options:
                     $this->line("DEBUG: translatableField is not array, skipping");
                 }
             }
+            
+            // Дополнительная проверка для случая, когда relationFields является массивом с числовыми ключами
+            $this->line("DEBUG: Additional check for numeric keys in relationFields...");
+            foreach ($translatableFields as $key => $translatableField) {
+                if (is_array($translatableField)) {
+                    foreach ($translatableField as $relationField => $relationFields) {
+                        if ($relationField === $relationName && is_array($relationFields)) {
+                            $this->line("DEBUG: Found relation '{$relationName}' with array fields: " . json_encode($relationFields));
+                            
+                            // Проверяем все значения в массиве (игнорируя ключи)
+                            foreach ($relationFields as $subFieldValue) {
+                                if (is_string($subFieldValue)) {
+                                    $this->line("DEBUG: Checking array value: '{$fieldName}' === '{$subFieldValue}'");
+                                    if ($fieldName === $subFieldValue) {
+                                        $this->line("DEBUG: MATCH found for array value in relation!");
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         
         $this->line("DEBUG: NO MATCH found for field '{$field}'");

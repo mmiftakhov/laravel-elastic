@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2024-12-19
+
+### Fixed
+- Fixed translatable field detection logic to properly handle numeric keys in relation field arrays
+- Added additional check for array values in relationFields when searching for translatable fields
+- Resolved issue where relation fields like `category.title` were not being recognized due to PHP array key conversion in nested arrays
+
 ## [0.3.3] - 2024-12-19
 
 ### Added

@@ -291,7 +291,7 @@ Options:
      * Создает маппинг индекса из конфигурации
      * 
      * Преобразует конфигурацию полей модели в маппинг Elasticsearch
-     * с поддержкой multi-field mapping для различных анализаторов
+     * с поддержкой relations и translatable полей
      * 
      * @param array $config Конфигурация модели
      * @return array Маппинг для Elasticsearch
@@ -299,37 +299,28 @@ Options:
     protected function getIndexMapping(array $config): array
     {
         $properties = [];
+        $translatableConfig = $this->getTranslatableConfig($config);
 
         // Добавляем поля для поиска
-        foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
-            $properties[$field] = [
-                'type' => $fieldConfig['type'] ?? 'text',
-            ];
-
-            if (isset($fieldConfig['analyzer'])) {
-                $properties[$field]['analyzer'] = $fieldConfig['analyzer'];
-            }
-
-            if (isset($fieldConfig['boost'])) {
-                $properties[$field]['boost'] = $fieldConfig['boost'];
-            }
-
-            // Добавляем multi-field mappings для разных анализаторов
-            if (isset($fieldConfig['fields'])) {
-                $properties[$field]['fields'] = [];
-                foreach ($fieldConfig['fields'] as $subField => $subFieldConfig) {
-                    $properties[$field]['fields'][$subField] = [
-                        'type' => $subFieldConfig['type'] ?? 'text',
+        foreach ($config['searchable_fields'] ?? [] as $field) {
+            // Определяем, является ли поле translatable
+            $isTranslatable = $this->isFieldTranslatable($field, $translatableConfig);
+            
+            if ($isTranslatable) {
+                // Для translatable полей создаем поля для каждого языка
+                foreach ($translatableConfig['locales'] as $locale) {
+                    $localizedField = $field . '_' . $locale;
+                    $properties[$localizedField] = [
+                        'type' => 'text',
+                        'analyzer' => $this->getAnalyzerForLocale($locale),
                     ];
-
-                    if (isset($subFieldConfig['analyzer'])) {
-                        $properties[$field]['fields'][$subField]['analyzer'] = $subFieldConfig['analyzer'];
-                    }
-
-                    if (isset($subFieldConfig['boost'])) {
-                        $properties[$field]['fields'][$subField]['boost'] = $subFieldConfig['boost'];
-                    }
                 }
+            } else {
+                // Для обычных полей создаем одно поле
+                $properties[$field] = [
+                    'type' => 'text',
+                    'analyzer' => 'standard',
+                ];
             }
         }
 
@@ -342,15 +333,96 @@ Options:
             if (isset($fieldConfig['analyzer'])) {
                 $properties[$field]['analyzer'] = $fieldConfig['analyzer'];
             }
-
-            if (isset($fieldConfig['boost'])) {
-                $properties[$field]['boost'] = $fieldConfig['boost'];
-            }
         }
 
         return [
             'properties' => $properties,
         ];
+    }
+
+    /**
+     * Определяет, является ли поле translatable
+     * 
+     * @param string $field Имя поля (может содержать relations)
+     * @param array $translatableConfig Конфигурация translatable полей
+     * @return bool True, если поле translatable
+     */
+    protected function isFieldTranslatable(string $field, array $translatableConfig): bool
+    {
+        if (!$translatableConfig['auto_detect_translatable']) {
+            return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+        }
+        
+        // Для auto_detect проверяем по списку translatable_fields
+        return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+    }
+
+    /**
+     * Проверяет, есть ли поле в списке translatable полей
+     * 
+     * @param string $field Имя поля
+     * @param array $translatableFields Список translatable полей
+     * @return bool True, если поле найдено в списке
+     */
+    protected function isFieldInTranslatableList(string $field, array $translatableFields): bool
+    {
+        foreach ($translatableFields as $translatableField) {
+            if (is_string($translatableField)) {
+                // Простое поле
+                if ($field === $translatableField) {
+                    return true;
+                }
+            } elseif (is_array($translatableField)) {
+                // Relation поле - проверяем все поля в relation
+                foreach ($translatableField as $relationField => $relationFields) {
+                    if (is_string($relationFields)) {
+                        // Простое поле в relation
+                        if ($field === $relationField . '.' . $relationFields) {
+                            return true;
+                        }
+                    } elseif (is_array($relationFields)) {
+                        // Массив полей в relation
+                        foreach ($relationFields as $subField) {
+                            if (is_string($subField)) {
+                                if ($field === $relationField . '.' . $subField) {
+                                    return true;
+                                }
+                            } elseif (is_array($subField)) {
+                                // Вложенные relations
+                                foreach ($subField as $nestedRelation => $nestedFields) {
+                                    if (is_array($nestedFields)) {
+                                        foreach ($nestedFields as $nestedField) {
+                                            if ($field === $relationField . '.' . $nestedRelation . '.' . $nestedField) {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Получает анализатор для конкретного языка
+     * 
+     * @param string $locale Код языка
+     * @return string Название анализатора
+     */
+    protected function getAnalyzerForLocale(string $locale): string
+    {
+        $analyzers = [
+            'en' => 'english',
+            'lv' => 'latvian',
+            'ru' => 'russian',
+        ];
+        
+        return $analyzers[$locale] ?? 'standard';
     }
 
     /**
@@ -393,8 +465,8 @@ Options:
      * Подготавливает данные документа для индексации
      * 
      * Собирает все необходимые поля из записи модели
-     * включая хранимые поля, поля для поиска и вычисляемые поля
-     * Поддерживает translatable поля (JSON структуры)
+     * включая поля для поиска, translatable поля и вычисляемые поля
+     * Поддерживает relations и translatable поля
      * 
      * @param \Illuminate\Database\Eloquent\Model $record Запись модели
      * @param array $config Конфигурация модели
@@ -403,17 +475,12 @@ Options:
     protected function prepareDocument($record, array $config): array
     {
         $document = [];
+        $translatableConfig = $this->getTranslatableConfig($config);
 
-        // При индексировании используем searchable_fields для определения полей
-        // searchable_fields определяют маппинг и индексацию данных
-        foreach ($config['searchable_fields'] ?? [] as $field => $fieldConfig) {
-            if (array_key_exists($field, $record->getAttributes())) {
-                $document[$field] = $record->getAttribute($field);
-            }
+        // Обрабатываем все поля из searchable_fields
+        foreach ($config['searchable_fields'] ?? [] as $field) {
+            $this->processField($record, $field, $document, $translatableConfig);
         }
-        
-        // Обрабатываем translatable поля (перезаписывают обычные поля)
-        $document = $this->processTranslatableFields($record, $document, $config);
 
         // Добавляем вычисляемые поля
         foreach ($config['computed_fields'] ?? [] as $field => $fieldConfig) {
@@ -421,6 +488,254 @@ Options:
         }
 
         return $document;
+    }
+
+    /**
+     * Обрабатывает отдельное поле для индексации
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param string $field Имя поля (может содержать relations)
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processField($record, string $field, array &$document, array $translatableConfig): void
+    {
+        // Проверяем, содержит ли поле relations
+        if (strpos($field, '.') !== false) {
+            $this->processRelationField($record, $field, $document, $translatableConfig);
+        } else {
+            $this->processSimpleField($record, $field, $document, $translatableConfig);
+        }
+    }
+
+    /**
+     * Обрабатывает простое поле (без relations)
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param string $field Имя поля
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processSimpleField($record, string $field, array &$document, array $translatableConfig): void
+    {
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($field, $translatableConfig)) {
+            $this->processTranslatableSimpleField($record, $field, $document, $translatableConfig);
+        } else {
+            // Обычное поле
+            if (array_key_exists($field, $record->getAttributes())) {
+                $document[$field] = $record->getAttribute($field);
+            }
+        }
+    }
+
+    /**
+     * Обрабатывает translatable простое поле
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param string $field Имя поля
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processTranslatableSimpleField($record, string $field, array &$document, array $translatableConfig): void
+    {
+        // Получаем оригинальное значение и декодируем JSON
+        $originalValue = $record->getRawOriginal($field);
+        $translatableArray = json_decode($originalValue, true);
+        
+        // Проверяем, что декодирование прошло успешно и это массив
+        if (is_array($translatableArray)) {
+            // Добавляем поля для каждого языка
+            foreach ($translatableConfig['locales'] as $locale) {
+                if (isset($translatableArray[$locale])) {
+                    $document[$field . '_' . $locale] = $translatableArray[$locale];
+                }
+            }
+        } else {
+            // Если декодирование не удалось, добавляем как обычное поле
+            if (array_key_exists($field, $record->getAttributes())) {
+                $document[$field] = $record->getAttribute($field);
+            }
+        }
+    }
+
+    /**
+     * Обрабатывает поле с relations
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param string $field Имя поля с relations (например, "category.title" или "category.manufacturer.name")
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processRelationField($record, string $field, array &$document, array $translatableConfig): void
+    {
+        $parts = explode('.', $field);
+        
+        if (count($parts) === 2) {
+            // Простое relation: "category.title"
+            $this->processSimpleRelationField($record, $parts[0], $parts[1], $field, $document, $translatableConfig);
+        } elseif (count($parts) > 2) {
+            // Вложенное relation: "category.manufacturer.name"
+            $this->processNestedRelationField($record, $parts, $field, $document, $translatableConfig);
+        }
+    }
+
+    /**
+     * Обрабатывает простое relation поле (один уровень)
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param string $relationName Имя relation
+     * @param string $relationField Имя поля в relation
+     * @param string $fullField Полное имя поля
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processSimpleRelationField($record, string $relationName, string $relationField, string $fullField, array &$document, array $translatableConfig): void
+    {
+        // Проверяем, загружено ли relation
+        if (!$record->relationLoaded($relationName)) {
+            return;
+        }
+        
+        $relation = $record->getRelation($relationName);
+        
+        // Обрабатываем разные типы relations
+        if ($relation instanceof \Illuminate\Database\Eloquent\Model) {
+            // Один к одному или многие к одному
+            $this->processSingleRelation($relation, $relationField, $fullField, $document, $translatableConfig);
+        } elseif ($relation instanceof \Illuminate\Database\Eloquent\Collection) {
+            // Один ко многим или многие ко многим
+            $this->processMultipleRelations($relation, $relationField, $fullField, $document, $translatableConfig);
+        }
+    }
+
+    /**
+     * Обрабатывает вложенное relation поле (несколько уровней)
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $record Запись модели
+     * @param array $parts Части поля (например, ["category", "manufacturer", "name"])
+     * @param string $fullField Полное имя поля
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processNestedRelationField($record, array $parts, string $fullField, array &$document, array $translatableConfig): void
+    {
+        $currentModel = $record;
+        
+        // Проходим по всем уровням relations
+        for ($i = 0; $i < count($parts) - 1; $i++) {
+            $relationName = $parts[$i];
+            
+            // Проверяем, загружено ли relation
+            if (!$currentModel->relationLoaded($relationName)) {
+                return;
+            }
+            
+            $relation = $currentModel->getRelation($relationName);
+            
+            if ($relation instanceof \Illuminate\Database\Eloquent\Model) {
+                $currentModel = $relation;
+            } elseif ($relation instanceof \Illuminate\Database\Eloquent\Collection) {
+                // Для коллекций берем первый элемент (можно изменить логику)
+                if ($relation->count() > 0) {
+                    $currentModel = $relation->first();
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+        
+        // Обрабатываем финальное поле
+        $finalField = end($parts);
+        
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($fullField, $translatableConfig)) {
+            $this->processTranslatableRelationField($currentModel, $finalField, $fullField, $document, $translatableConfig);
+        } else {
+            // Обычное поле в relation
+            if (array_key_exists($finalField, $currentModel->getAttributes())) {
+                $document[$fullField] = $currentModel->getAttribute($finalField);
+            }
+        }
+    }
+
+    /**
+     * Обрабатывает одиночное relation
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $relation Модель relation
+     * @param string $relationField Имя поля в relation
+     * @param string $fullField Полное имя поля (например, "category.title")
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processSingleRelation($relation, string $relationField, string $fullField, array &$document, array $translatableConfig): void
+    {
+        // Проверяем, является ли поле translatable
+        if ($this->isFieldTranslatable($fullField, $translatableConfig)) {
+            $this->processTranslatableRelationField($relation, $relationField, $fullField, $document, $translatableConfig);
+        } else {
+            // Обычное поле в relation
+            if (array_key_exists($relationField, $relation->getAttributes())) {
+                $document[$fullField] = $relation->getAttribute($relationField);
+            }
+        }
+    }
+
+    /**
+     * Обрабатывает translatable поле в relation
+     * 
+     * @param \Illuminate\Database\Eloquent\Model $relation Модель relation
+     * @param string $relationField Имя поля в relation
+     * @param string $fullField Полное имя поля
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processTranslatableRelationField($relation, string $relationField, string $fullField, array &$document, array $translatableConfig): void
+    {
+        // Получаем оригинальное значение и декодируем JSON
+        $originalValue = $relation->getRawOriginal($relationField);
+        $translatableArray = json_decode($originalValue, true);
+        
+        // Проверяем, что декодирование прошло успешно и это массив
+        if (is_array($translatableArray)) {
+            // Добавляем поля для каждого языка
+            foreach ($translatableConfig['locales'] as $locale) {
+                if (isset($translatableArray[$locale])) {
+                    $document[$fullField . '_' . $locale] = $translatableArray[$locale];
+                }
+            }
+        } else {
+            // Если декодирование не удалось, добавляем как обычное поле
+            if (array_key_exists($relationField, $relation->getAttributes())) {
+                $document[$fullField] = $relation->getAttribute($relationField);
+            }
+        }
+    }
+
+    /**
+     * Обрабатывает множественные relations (коллекции)
+     * 
+     * @param \Illuminate\Database\Eloquent\Collection $relations Коллекция relations
+     * @param string $relationField Имя поля в relation
+     * @param string $fullField Полное имя поля
+     * @param array $document Текущий документ
+     * @param array $translatableConfig Конфигурация translatable полей
+     */
+    protected function processMultipleRelations($relations, string $relationField, string $fullField, array &$document, array $translatableConfig): void
+    {
+        $values = [];
+        
+        foreach ($relations as $relation) {
+            if (array_key_exists($relationField, $relation->getAttributes())) {
+                $values[] = $relation->getAttribute($relationField);
+            }
+        }
+        
+        if (!empty($values)) {
+            $document[$fullField] = implode(' ', $values);
+        }
     }
 
     /**
@@ -673,6 +988,7 @@ Options:
      * 
      * Позволяет фильтровать записи перед индексацией
      * Поддерживает различные типы условий: where, where_in, where_between, where_has и др.
+     * Автоматически загружает relations, указанные в searchable_fields
      * 
      * @param \Illuminate\Database\Eloquent\Model $model Экземпляр модели
      * @param array $config Конфигурация модели
@@ -730,7 +1046,46 @@ Options:
             $conditions['where_callback']($query);
         }
 
+        // Загружаем relations, указанные в searchable_fields
+        $this->loadRelationsForSearchableFields($query, $config);
+
         return $query;
+    }
+
+    /**
+     * Загружает relations, указанные в searchable_fields
+     * 
+     * @param \Illuminate\Database\Eloquent\Builder $query Query Builder
+     * @param array $config Конфигурация модели
+     */
+    protected function loadRelationsForSearchableFields($query, array $config): void
+    {
+        $relationsToLoad = [];
+        
+        foreach ($config['searchable_fields'] ?? [] as $field) {
+            if (strpos($field, '.') !== false) {
+                $parts = explode('.', $field);
+                
+                // Строим путь для вложенных relations
+                $currentPath = '';
+                for ($i = 0; $i < count($parts) - 1; $i++) {
+                    if ($i > 0) {
+                        $currentPath .= '.';
+                    }
+                    $currentPath .= $parts[$i];
+                    
+                    // Добавляем relation в список для загрузки
+                    if (!in_array($currentPath, $relationsToLoad)) {
+                        $relationsToLoad[] = $currentPath;
+                    }
+                }
+            }
+        }
+        
+        // Загружаем все необходимые relations
+        if (!empty($relationsToLoad)) {
+            $query->with($relationsToLoad);
+        }
     }
 
     /**

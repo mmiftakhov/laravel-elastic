@@ -335,6 +335,11 @@ return [
     | Глобальные настройки для обработки translatable полей (JSON структур с переводами).
     | Эти настройки применяются ко всем моделям, если не переопределены в конфигурации модели.
     |
+    | Поддерживает relations в формате:
+    | - Простые поля: 'title', 'description'
+    | - Relations: 'category' => ['title', 'description']
+    | - Вложенные relations: 'category' => ['manufacturer' => ['name', 'code']]
+    |
     | Документация:
     | - https://www.elastic.co/guide/en/elasticsearch/reference/8.18/mapping.html
     | - https://www.elastic.co/guide/en/elasticsearch/reference/8.18/mapping-types.html
@@ -354,8 +359,13 @@ return [
         'auto_detect_translatable' => true,
         
         // Список полей, которые всегда считаются translatable (если auto_detect = false)
+        // Поддерживает relations в формате массива
         'translatable_fields' => [
             'title', 'slug', 'short_description', 'specification', 'description', 'content'
+            // Примеры с relations:
+            // 'category' => ['title', 'description'],
+            // 'brand' => ['name', 'description'],
+            // 'category' => ['manufacturer' => ['name', 'code']]
         ],
     ],
 
@@ -449,114 +459,31 @@ return [
                 'index_localized_fields' => true,          // Создавать отдельные поля для каждого языка
                 'auto_detect_translatable' => true,        // Автоматически определять translatable поля
                 'translatable_fields' => [                 // Список полей (если auto_detect = false)
-                    'title', 'slug', 'short_description', 'specification', 'description'
+                    'title', 'slug', 'short_description', 'specification', 'description',
+                    // Примеры с relations:
+                    'category' => ['title', 'description'],
+                    'brand' => ['name', 'description'],
+                    // 'category' => ['manufacturer' => ['name', 'code']] // Вложенные relations
                 ],
             ],
             
             // Поля для поиска - определяют маппинг полей в Elasticsearch и индексируются
+            // Поддерживает relations в формате "relation.field" или "relation.nested.field"
             // Каждое поле может иметь свой тип, анализатор и настройки
-            // Эти поля используются при индексировании для создания структуры индекса
-            // Все индексированные поля автоматически возвращаются в результатах поиска через _source
             'searchable_fields' => [
-                // Translatable поля - извлекаются из JSON структуры
-                // Поле заголовка (translatable)
-                'title' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'english',                   // Анализатор для английского языка
-                    'fields' => [
-                        // Подполе для точного совпадения
-                        'exact' => [
-                            'type' => 'text',
-                            'analyzer' => 'exact_match',       // Анализатор точного совпадения
-                        ],
-                        // Подполе для автодополнения
-                        'autocomplete' => [
-                            'type' => 'text',
-                            'analyzer' => 'autocomplete',      // Анализатор автодополнения
-                        ],
-                    ],
-                ],
+                // Поля текущей модели
+                'title', 'slug', 'short_description', 'specification', 'description',
+                'is_active', 'created_at', 'updated_at',
                 
-                // Поле slug (translatable)
-                'slug' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'exact_match',               // Анализатор точного совпадения
-                ],
+                // Поля из relations (формат: "relation.field")
+                'category.title', 'category.slug', 'category.is_active',
+                'brand.name', 'brand.slug', 'brand.logo',
                 
-                // Поле краткого описания (translatable)
-                'short_description' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'english',                   // Анализатор для английского языка
-                ],
+                // Вложенные relations (формат: "relation.nested.field")
+                // 'category.manufacturer.name', 'category.manufacturer.code',
                 
-                // Поле спецификации (translatable)
-                'specification' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'english',                   // Анализатор для английского языка
-                ],
-                
-                // Языковые версии полей (извлекаются из translatable JSON)
-                // Английский язык
-                'title_en' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'english',                   // Анализатор для английского языка
-                    'fields' => [
-                        'exact' => [
-                            'type' => 'text',
-                            'analyzer' => 'exact_match',
-                        ],
-                        'autocomplete' => [
-                            'type' => 'text',
-                            'analyzer' => 'autocomplete',
-                        ],
-                    ],
-                ],
-                
-                'slug_en' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'exact_match',               // Анализатор точного совпадения
-                ],
-                
-                'short_description_en' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'english',                   // Анализатор для английского языка
-                ],
-                
-                'specification_en' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'english',                   // Анализатор для английского языка
-                ],
-                
-                // Латышский язык
-                'title_lv' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'latvian',                   // Анализатор для латышского языка
-                    'fields' => [
-                        'exact' => [
-                            'type' => 'text',
-                            'analyzer' => 'exact_match',
-                        ],
-                        'autocomplete' => [
-                            'type' => 'text',
-                            'analyzer' => 'autocomplete',
-                        ],
-                    ],
-                ],
-                
-                'slug_lv' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'exact_match',               // Анализатор точного совпадения
-                ],
-                
-                'short_description_lv' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'latvian',                   // Анализатор для латышского языка
-                ],
-                
-                'specification_lv' => [
-                    'type' => 'text',                          // Тип поля - текстовый
-                    'analyzer' => 'latvian',                   // Анализатор для латышского языка
-                ],
+                // Поля из коллекций (если нужно)
+                'images.url', 'images.alt',
             ],
             
 

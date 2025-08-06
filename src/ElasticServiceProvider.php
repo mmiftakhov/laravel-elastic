@@ -59,6 +59,19 @@ class ElasticServiceProvider extends ServiceProvider
                 }
             }
             
+            // Оптимизированные настройки для производительности
+            $clientBuilder->setHttpClientOptions([
+                'timeout' => 10,                    // Таймаут запроса
+                'connect_timeout' => 5,             // Таймаут подключения
+                'http_errors' => false,             // Не выбрасывать исключения для HTTP ошибок
+                'verify' => false,                  // Отключить проверку SSL (только для разработки)
+                'curl' => [
+                    CURLOPT_TCP_KEEPALIVE => 1,     // Включить TCP keep-alive
+                    CURLOPT_TCP_KEEPIDLE => 120,    // Время до первого keep-alive
+                    CURLOPT_TCP_KEEPINTVL => 60,    // Интервал между keep-alive
+                ],
+            ]);
+            
             return $clientBuilder->build();
         });
 
@@ -94,6 +107,8 @@ class ElasticServiceProvider extends ServiceProvider
                 \Maratmiftahov\LaravelElastic\Console\IndexCommand::class,
                 // Команда для тестирования поиска в Elasticsearch
                 \Maratmiftahov\LaravelElastic\Console\SearchCommand::class,
+                // Команда для очистки кэша Elasticsearch
+                \Maratmiftahov\LaravelElastic\Console\ClearCacheCommand::class,
             ]);
         }
     }

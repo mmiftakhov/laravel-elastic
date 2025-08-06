@@ -6,6 +6,7 @@ use Elastic\Elasticsearch\Client;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Основной класс для работы с поиском в Elasticsearch
@@ -69,6 +70,8 @@ class ElasticSearch
      */
     public function search(string $modelClass, string $query, array $options = []): Collection
     {
+        $startTime = microtime(true);
+        
         $models = Config::get('elastic.models', []);
         
         if (!isset($models[$modelClass])) {
@@ -84,8 +87,31 @@ class ElasticSearch
         try {
             // Выполняем поиск через API Elasticsearch 8.x
             $response = $this->elasticsearch->search($searchParams);
-            return $this->formatResults($response->asArray(), $config);
+            $results = $this->formatResults($response->asArray(), $config);
+            
+            $endTime = microtime(true);
+            $executionTime = ($endTime - $startTime) * 1000;
+            
+            Log::info("ElasticSearch search completed", [
+                'model' => $modelClass,
+                'query' => $query,
+                'execution_time_ms' => round($executionTime, 2),
+                'results_count' => $results->count(),
+                'total_hits' => $results->get('_meta.total', 0)
+            ]);
+            
+            return $results;
         } catch (\Exception $e) {
+            $endTime = microtime(true);
+            $executionTime = ($endTime - $startTime) * 1000;
+            
+            Log::error("ElasticSearch search failed", [
+                'model' => $modelClass,
+                'query' => $query,
+                'execution_time_ms' => round($executionTime, 2),
+                'error' => $e->getMessage()
+            ]);
+            
             throw new \RuntimeException("Search failed: " . $e->getMessage(), 0, $e);
         }
     }
@@ -265,30 +291,35 @@ class ElasticSearch
      */
     protected function getSearchFieldsWithBoost(array $config, ?array $fields, ?array $boost): array
     {
-        if ($fields) {
-            // Применяем boost к указанным полям
-            if ($boost) {
-                return array_map(function($field) use ($boost) {
-                    $fieldName = is_array($field) ? $field[0] : $field;
-                    $fieldBoost = $boost[$fieldName] ?? 1.0;
-                    return $fieldName . '^' . $fieldBoost;
-                }, $fields);
-            }
-            return $fields;
-        }
-
-        $searchFields = [];
-        $boostConfig = $config['searchable_fields_boost'] ?? [];
-        $translatableConfig = $this->getTranslatableConfig($config);
+        // Кэшируем результат построения поисковых полей
+        $cacheKey = 'search_fields_' . md5(serialize($config) . serialize($fields) . serialize($boost));
         
-        $this->extractSearchFieldsWithBoostFromConfig(
-            $config['searchable_fields'] ?? [], 
-            $searchFields, 
-            $boostConfig,
-            $translatableConfig
-        );
+        return Cache::remember($cacheKey, 3600, function() use ($config, $fields, $boost) {
+            if ($fields) {
+                // Применяем boost к указанным полям
+                if ($boost) {
+                    return array_map(function($field) use ($boost) {
+                        $fieldName = is_array($field) ? $field[0] : $field;
+                        $fieldBoost = $boost[$fieldName] ?? 1.0;
+                        return $fieldName . '^' . $fieldBoost;
+                    }, $fields);
+                }
+                return $fields;
+            }
 
-        return $searchFields;
+            $searchFields = [];
+            $boostConfig = $config['searchable_fields_boost'] ?? [];
+            $translatableConfig = $this->getTranslatableConfig($config);
+            
+            $this->extractSearchFieldsWithBoostFromConfig(
+                $config['searchable_fields'] ?? [], 
+                $searchFields, 
+                $boostConfig,
+                $translatableConfig
+            );
+
+            return $searchFields;
+        });
     }
 
     /**
@@ -503,16 +534,21 @@ class ElasticSearch
      */
     protected function getAutocompleteFields(array $config): array
     {
-        $autocompleteFields = [];
-        $translatableConfig = $this->getTranslatableConfig($config);
+        // Кэшируем поля для автодополнения
+        $cacheKey = 'autocomplete_fields_' . md5(serialize($config));
         
-        $this->extractAutocompleteFieldsFromConfig(
-            $config['searchable_fields'] ?? [], 
-            $autocompleteFields,
-            $translatableConfig
-        );
+        return Cache::remember($cacheKey, 3600, function() use ($config) {
+            $autocompleteFields = [];
+            $translatableConfig = $this->getTranslatableConfig($config);
+            
+            $this->extractAutocompleteFieldsFromConfig(
+                $config['searchable_fields'] ?? [], 
+                $autocompleteFields,
+                $translatableConfig
+            );
 
-        return $autocompleteFields;
+            return $autocompleteFields;
+        });
     }
 
     /**
@@ -611,16 +647,21 @@ class ElasticSearch
      */
     protected function getHighlightFields(array $config): array
     {
-        $highlightFields = [];
-        $translatableConfig = $this->getTranslatableConfig($config);
+        // Кэшируем поля для подсветки
+        $cacheKey = 'highlight_fields_' . md5(serialize($config));
         
-        $this->extractHighlightFieldsFromConfig(
-            $config['searchable_fields'] ?? [], 
-            $highlightFields,
-            $translatableConfig
-        );
+        return Cache::remember($cacheKey, 3600, function() use ($config) {
+            $highlightFields = [];
+            $translatableConfig = $this->getTranslatableConfig($config);
+            
+            $this->extractHighlightFieldsFromConfig(
+                $config['searchable_fields'] ?? [], 
+                $highlightFields,
+                $translatableConfig
+            );
 
-        return $highlightFields;
+            return $highlightFields;
+        });
     }
 
     /**
@@ -812,6 +853,8 @@ class ElasticSearch
      */
     protected function loadDataFromDatabase(array $ids, array $config): array
     {
+        $startTime = microtime(true);
+        
         if (empty($ids)) {
             return [];
         }
@@ -887,6 +930,16 @@ class ElasticSearch
             }
         }
         
+        $endTime = microtime(true);
+        $executionTime = ($endTime - $startTime) * 1000;
+        
+        Log::info("Database data loading completed", [
+            'model' => $modelClass,
+            'ids_count' => count($ids),
+            'results_count' => count($orderedResults),
+            'execution_time_ms' => round($executionTime, 2)
+        ]);
+        
         return $orderedResults;
     }
 
@@ -942,20 +995,25 @@ class ElasticSearch
      */
     protected function getForeignKeysForRelations(string $modelClass, array $relations): array
     {
-        $foreignKeys = [];
+        // Кэшируем foreign keys для relations
+        $cacheKey = 'foreign_keys_' . $modelClass . '_' . md5(serialize($relations));
         
-        // Создаем экземпляр модели для получения информации о relations
-        $model = new $modelClass();
-        
-        foreach ($relations as $relation) {
-            // Получаем foreign key для relation
-            $foreignKey = $this->getForeignKeyForRelation($model, $relation);
-            if ($foreignKey) {
-                $foreignKeys[] = $foreignKey;
+        return Cache::remember($cacheKey, 3600, function() use ($modelClass, $relations) {
+            $foreignKeys = [];
+            
+            // Создаем экземпляр модели для получения информации о relations
+            $model = new $modelClass();
+            
+            foreach ($relations as $relation) {
+                // Получаем foreign key для relation
+                $foreignKey = $this->getForeignKeyForRelation($model, $relation);
+                if ($foreignKey) {
+                    $foreignKeys[] = $foreignKey;
+                }
             }
-        }
-        
-        return array_unique($foreignKeys);
+            
+            return array_unique($foreignKeys);
+        });
     }
 
     /**
@@ -967,28 +1025,32 @@ class ElasticSearch
      */
     protected function getForeignKeyForRelation($model, string $relation): ?string
     {
-        // Проверяем, существует ли relation
-        if (!method_exists($model, $relation)) {
+        // Кэшируем foreign key для каждого relation
+        $cacheKey = 'foreign_key_' . get_class($model) . '_' . $relation;
+        
+        return Cache::remember($cacheKey, 3600, function() use ($model, $relation) {
+            // Проверяем, существует ли relation
+            if (!method_exists($model, $relation)) {
+                return null;
+            }
+            
+            // Получаем relation метод без использования Reflection
+            $relationInstance = $model->$relation();
+            
+            // Получаем foreign key из relation
+            if ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo) {
+                return $relationInstance->getForeignKeyName();
+            } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\HasOne) {
+                return $relationInstance->getForeignKeyName();
+            } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\HasMany) {
+                return $relationInstance->getForeignKeyName();
+            } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\BelongsToMany) {
+                // Для many-to-many возвращаем pivot table foreign key
+                return $relationInstance->getForeignPivotKeyName();
+            }
+            
             return null;
-        }
-        
-        // Получаем relation метод
-        $relationMethod = new \ReflectionMethod($model, $relation);
-        $relationInstance = $relationMethod->invoke($model);
-        
-        // Получаем foreign key из relation
-        if ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo) {
-            return $relationInstance->getForeignKeyName();
-        } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\HasOne) {
-            return $relationInstance->getForeignKeyName();
-        } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\HasMany) {
-            return $relationInstance->getForeignKeyName();
-        } elseif ($relationInstance instanceof \Illuminate\Database\Eloquent\Relations\BelongsToMany) {
-            // Для many-to-many возвращаем pivot table foreign key
-            return $relationInstance->getForeignPivotKeyName();
-        }
-        
-        return null;
+        });
     }
 
     /**
@@ -1018,19 +1080,24 @@ class ElasticSearch
      */
     protected function getTranslatableConfig(array $config): array
     {
-        $globalConfig = Config::get('elastic.translatable', []);
-        $modelConfig = $config['translatable'] ?? [];
+        // Кэшируем конфигурацию translatable полей
+        $cacheKey = 'translatable_config_' . md5(serialize($config));
         
-        $mergedConfig = array_merge($globalConfig, $modelConfig);
-        
-        // Устанавливаем значения по умолчанию, если они отсутствуют
-        $mergedConfig['locales'] = $mergedConfig['locales'] ?? ['en'];
-        $mergedConfig['fallback_locale'] = $mergedConfig['fallback_locale'] ?? 'en';
-        $mergedConfig['index_localized_fields'] = $mergedConfig['index_localized_fields'] ?? true;
-        $mergedConfig['auto_detect_translatable'] = $mergedConfig['auto_detect_translatable'] ?? true;
-        $mergedConfig['translatable_fields'] = $mergedConfig['translatable_fields'] ?? [];
-        
-        return $mergedConfig;
+        return Cache::remember($cacheKey, 3600, function() use ($config) {
+            $globalConfig = Config::get('elastic.translatable', []);
+            $modelConfig = $config['translatable'] ?? [];
+            
+            $mergedConfig = array_merge($globalConfig, $modelConfig);
+            
+            // Устанавливаем значения по умолчанию, если они отсутствуют
+            $mergedConfig['locales'] = $mergedConfig['locales'] ?? ['en'];
+            $mergedConfig['fallback_locale'] = $mergedConfig['fallback_locale'] ?? 'en';
+            $mergedConfig['index_localized_fields'] = $mergedConfig['index_localized_fields'] ?? true;
+            $mergedConfig['auto_detect_translatable'] = $mergedConfig['auto_detect_translatable'] ?? true;
+            $mergedConfig['translatable_fields'] = $mergedConfig['translatable_fields'] ?? [];
+            
+            return $mergedConfig;
+        });
     }
 
     /**
@@ -1042,12 +1109,17 @@ class ElasticSearch
      */
     protected function isFieldTranslatable(string $field, array $translatableConfig): bool
     {
-        if (!$translatableConfig['auto_detect_translatable']) {
-            return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
-        }
+        // Кэшируем результат для каждого поля
+        $cacheKey = 'translatable_field_' . md5($field . serialize($translatableConfig));
         
-        // Для auto_detect проверяем по списку translatable_fields
-        return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+        return Cache::remember($cacheKey, 3600, function() use ($field, $translatableConfig) {
+            if (!$translatableConfig['auto_detect_translatable']) {
+                return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+            }
+            
+            // Для auto_detect проверяем по списку translatable_fields
+            return $this->isFieldInTranslatableList($field, $translatableConfig['translatable_fields'] ?? []);
+        });
     }
 
     /**
@@ -1059,38 +1131,48 @@ class ElasticSearch
      */
     protected function isFieldInTranslatableList(string $field, array $translatableFields): bool
     {
+        // Создаем хеш-таблицу для быстрого поиска
+        static $fieldCache = [];
+        
+        $cacheKey = md5(serialize($translatableFields));
+        if (!isset($fieldCache[$cacheKey])) {
+            $fieldCache[$cacheKey] = $this->buildTranslatableFieldHash($translatableFields);
+        }
+        
+        return isset($fieldCache[$cacheKey][$field]);
+    }
+    
+    /**
+     * Строит хеш-таблицу для быстрого поиска translatable полей
+     * 
+     * @param array $translatableFields Список translatable полей
+     * @return array Хеш-таблица полей
+     */
+    protected function buildTranslatableFieldHash(array $translatableFields): array
+    {
+        $hash = [];
+        
         foreach ($translatableFields as $key => $translatableField) {
             if (is_string($translatableField)) {
-                // Простое поле (может быть с числовым ключом)
-                if ($field === $translatableField) {
-                    return true;
-                }
+                // Простое поле
+                $hash[$translatableField] = true;
             } elseif (is_array($translatableField)) {
-                // Relation поле - проверяем все поля в relation
+                // Relation поля
                 foreach ($translatableField as $relationField => $relationFields) {
                     if (is_string($relationFields)) {
                         // Простое поле в relation
-                        $expectedField = $relationField . '.' . $relationFields;
-                        if ($field === $expectedField) {
-                            return true;
-                        }
+                        $hash[$relationField . '.' . $relationFields] = true;
                     } elseif (is_array($relationFields)) {
                         // Массив полей в relation
                         foreach ($relationFields as $subFieldKey => $subFieldValue) {
                             if (is_numeric($subFieldKey) && is_string($subFieldValue)) {
                                 // Простое поле в relation (числовой ключ)
-                                $expectedField = $relationField . '.' . $subFieldValue;
-                                if ($field === $expectedField) {
-                                    return true;
-                                }
+                                $hash[$relationField . '.' . $subFieldValue] = true;
                             } elseif (is_string($subFieldKey) && is_array($subFieldValue)) {
                                 // Вложенные relations
                                 foreach ($subFieldValue as $nestedField) {
                                     if (is_string($nestedField)) {
-                                        $expectedField = $relationField . '.' . $subFieldKey . '.' . $nestedField;
-                                        if ($field === $expectedField) {
-                                            return true;
-                                        }
+                                        $hash[$relationField . '.' . $subFieldKey . '.' . $nestedField] = true;
                                     }
                                 }
                             }
@@ -1100,69 +1182,6 @@ class ElasticSearch
             }
         }
         
-        // Дополнительная проверка для случая, когда translatable_fields имеет смешанную структуру
-        // и PHP преобразовал простые поля в числовые ключи
-        $fieldParts = explode('.', $field);
-        if (count($fieldParts) === 2) {
-            $relationName = $fieldParts[0];
-            $fieldName = $fieldParts[1];
-            
-            // Ищем relation в translatable_fields
-            foreach ($translatableFields as $key => $translatableField) {
-                if (is_array($translatableField)) {
-                    foreach ($translatableField as $relationField => $relationFields) {
-                        if ($relationField === $relationName) {
-                            if (is_string($relationFields)) {
-                                // Простое поле в relation
-                                if ($fieldName === $relationFields) {
-                                    return true;
-                                }
-                            } elseif (is_array($relationFields)) {
-                                // Массив полей в relation
-                                foreach ($relationFields as $subFieldKey => $subFieldValue) {
-                                    if (is_numeric($subFieldKey) && is_string($subFieldValue)) {
-                                        // Простое поле в relation (числовой ключ)
-                                        if ($fieldName === $subFieldValue) {
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Дополнительная проверка для случая, когда relationFields является массивом с числовыми ключами
-            foreach ($translatableFields as $key => $translatableField) {
-                if (is_array($translatableField)) {
-                    foreach ($translatableField as $relationField => $relationFields) {
-                        if ($relationField === $relationName && is_array($relationFields)) {
-                            // Проверяем все значения в массиве (игнорируя ключи)
-                            foreach ($relationFields as $subFieldValue) {
-                                if (is_string($subFieldValue)) {
-                                    if ($fieldName === $subFieldValue) {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Финальная проверка - ищем relation по ключу translatableField
-            if (isset($translatableFields[$relationName]) && is_array($translatableFields[$relationName])) {
-                foreach ($translatableFields[$relationName] as $subFieldValue) {
-                    if (is_string($subFieldValue)) {
-                        if ($fieldName === $subFieldValue) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        
-        return false;
+        return $hash;
     }
 } 

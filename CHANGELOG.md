@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2024-12-19
+
+### Added
+- **Performance Monitoring**: Added comprehensive logging for search performance metrics
+- **Caching System**: Implemented intelligent caching for frequently accessed data
+- **New Command**: Added `elastic:clear-cache` command for cache management
+- **HTTP Client Optimization**: Enhanced Elasticsearch client configuration for better performance
+
+### Performance Improvements
+- **Search Field Caching**: Cache search field generation to avoid repeated processing
+- **Autocomplete Field Caching**: Cache autocomplete field generation
+- **Highlight Field Caching**: Cache highlight field configuration
+- **Translatable Config Caching**: Cache translatable field configuration
+- **Foreign Key Caching**: Cache foreign key resolution for relations
+- **Field Detection Caching**: Cache translatable field detection results
+
+### Monitoring & Logging
+- **Search Performance Logging**: Log execution time, result count, and total hits for each search
+- **Database Loading Logging**: Log performance metrics for database data loading
+- **Error Logging**: Enhanced error logging with performance metrics
+- **Cache Hit/Miss Tracking**: Track cache usage for optimization
+
+### Technical Enhancements
+- **HTTP Client Configuration**: Optimized connection settings with keep-alive support
+- **Timeout Configuration**: Configurable timeouts for Elasticsearch requests
+- **Connection Pooling**: Improved connection management for better performance
+- **Cache Key Management**: Structured cache keys for better organization
+
+### New Commands
+- `php artisan elastic:clear-cache` - Clear all Elasticsearch-related cache
+- `php artisan elastic:clear-cache --all` - Clear entire application cache
+
+### Cache Management
+The package now caches the following data for 1 hour:
+- Search field configurations with boost values
+- Autocomplete field lists
+- Highlight field configurations
+- Translatable field configurations
+- Foreign key mappings for relations
+- Translatable field detection results
+
+### Performance Impact
+- **Reduced CPU Usage**: Caching eliminates repeated field processing
+- **Faster Search**: Pre-computed field lists reduce search preparation time
+- **Better Monitoring**: Performance metrics help identify bottlenecks
+- **Optimized Connections**: HTTP client optimizations reduce connection overhead
+
+### Migration Guide
+No breaking changes. The caching system is transparent and automatically improves performance.
+
 ## [0.4.1] - 2024-12-19
 
 ### Added

@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2024-12-19
+
+### Fixed
+- **CRITICAL FIX**: Fixed indexing logic for relation fields and translatable fields
+- **Structure Processing**: Corrected handling of simple fields vs relation fields in configuration
+- **Translatable Relations**: Fixed processing of translatable fields within relations
+- **Nested Relations**: Improved support for multi-level nested relations
+- **Collection Relations**: Fixed handling of multiple relations (collections) with translatable fields
+
+### Changed
+- **Indexing Logic**: Completely rewritten field processing logic for better accuracy
+- **Configuration Structure**: Improved validation and processing of searchable_fields configuration
+- **Field Detection**: Enhanced detection of translatable fields in complex relation structures
+
+### Technical Improvements
+- **Field Type Detection**: Better distinction between simple fields and relation fields
+- **Translatable Processing**: Improved JSON field processing for translatable content
+- **Relation Handling**: Enhanced support for single and multiple relations
+- **Nested Structure**: Better handling of deeply nested relation structures
+
+### Configuration Examples
+```php
+// Simple model
+'App\\Models\\Product' => [
+    'index' => 'products',
+    'translatable' => [
+        'locales' => ['en', 'lv'],
+        'translatable_fields' => ['title', 'description'],
+    ],
+    'searchable_fields' => [
+        'title', 'description', 'is_active', 'price',
+    ],
+],
+
+// Model with relations
+'App\\Models\\Product' => [
+    'index' => 'products',
+    'translatable' => [
+        'locales' => ['en', 'lv'],
+        'translatable_fields' => [
+            'title', 'description',
+            'category' => ['title', 'description'],
+            'brand' => ['name'],
+        ],
+    ],
+    'searchable_fields' => [
+        'title', 'description', 'is_active', 'price',
+        'category' => ['title', 'description', 'is_active'],
+        'brand' => ['name', 'slug', 'logo'],
+    ],
+],
+```
+
 ## [0.4.3] - 2024-12-19
 
 ### Added

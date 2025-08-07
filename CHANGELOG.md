@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2024-12-19
+
+### Added
+- **NEW FEATURE**: Support for empty search queries with `match_all` functionality
+- **NEW FEATURE**: Advanced filtering system with `filter` option in search method
+- **Enhanced Relations**: Improved handling of complex nested relations with recursive configuration
+- **Better Foreign Key Management**: Enhanced foreign key detection for different relation types
+
+### Changed
+- **Search Method Signature**: Made query parameter optional in search method (`?string $query = ''`)
+- **Query Building**: Improved query construction with support for empty queries and filters
+- **Relation Loading**: Enhanced relation loading with better primary key handling
+- **Code Organization**: Refactored relation configuration application into separate method
+
+### Fixed
+- **HasOne/HasMany Relations**: Fixed foreign key handling for HasOne and HasMany relations
+- **Primary Key Loading**: Ensured primary key is always included for proper relation loading
+- **Nested Relations**: Improved recursive handling of deeply nested relation configurations
+
+### Technical Improvements
+- **Filter Query Building**: Added `buildFilterQuery()` method for constructing Elasticsearch filters
+- **Relation Config Application**: Added `applyRelationConfig()` method for recursive relation setup
+- **Query Optimization**: Better handling of bool queries with filters
+- **Code Reusability**: Improved code structure with better separation of concerns
+
+### Usage Examples
+```php
+// Search with empty query (returns all records)
+$results = $elasticSearch->search('App\Models\Product');
+
+// Search with filters
+$results = $elasticSearch->search('App\Models\Product', 'query', [
+    'filter' => [
+        'is_active' => true,
+        'category_id' => [1, 2, 3],  // Multiple values
+        'price' => ['gte' => 100, 'lte' => 500]  // Range filter
+    ]
+]);
+
+// Complex nested relations with proper configuration
+$results = $elasticSearch->search('App\Models\Product', 'query', [
+    'relations' => [
+        'category' => [
+            'select' => ['id', 'title', 'is_active'],
+            'with' => [
+                'manufacturer' => [
+                    'select' => ['id', 'name', 'code']
+                ]
+            ]
+        ]
+    ]
+]);
+```
+
 ## [0.4.4] - 2024-12-19
 
 ### Fixed

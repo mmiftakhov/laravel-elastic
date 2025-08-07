@@ -74,7 +74,7 @@ class ElasticSearch
      * @throws \InvalidArgumentException Если модель не настроена
      * @throws \RuntimeException При ошибке поиска
      */
-    public function search(string $modelClass, string $query, array $options = []): Collection
+    public function search(string $modelClass, ?string $query = '', array $options = []): Collection
     {
         $startTime = microtime(true);
         
@@ -236,22 +236,34 @@ class ElasticSearch
             throw new \RuntimeException("No search fields found. Check configuration.");
         }
 
+        // Проверяем, пустой ли запрос
+        $isEmptyQuery = empty(trim($query));
+        
         $searchParams = [
             'body' => [
-                'query' => [
-                    'multi_match' => [
-                        'query' => $query,
-                        'fields' => $searchFields,
-                        'type' => $options['type'] ?? 'best_fields',
-                        'operator' => $options['operator'] ?? $searchSettings['operator'] ?? 'OR',
-                        'fuzziness' => $options['fuzziness'] ?? $searchSettings['fuzziness'] ?? 'AUTO',
-                        'minimum_should_match' => $options['minimum_should_match'] ?? $searchSettings['minimum_should_match'] ?? '75%',
-                    ],
-                ],
                 'size' => $options['limit'] ?? 10,
                 'from' => $options['offset'] ?? 0,
             ],
         ];
+        
+        if ($isEmptyQuery) {
+            // Если запрос пустой, используем match_all для получения всех записей
+            $searchParams['body']['query'] = [
+                'match_all' => new \stdClass()
+            ];
+        } else {
+            // Обычный поиск
+            $searchParams['body']['query'] = [
+                'multi_match' => [
+                    'query' => $query,
+                    'fields' => $searchFields,
+                    'type' => $options['type'] ?? 'best_fields',
+                    'operator' => $options['operator'] ?? $searchSettings['operator'] ?? 'OR',
+                    'fuzziness' => $options['fuzziness'] ?? $searchSettings['fuzziness'] ?? 'AUTO',
+                    'minimum_should_match' => $options['minimum_should_match'] ?? $searchSettings['minimum_should_match'] ?? '75%',
+                ],
+            ];
+        }
 
         // Оптимизированные условные проверки
         $this->addOptionalSearchParams($searchParams, $options, $config);
@@ -292,6 +304,29 @@ class ElasticSearch
             $searchParams['body']['query']['multi_match']['score_mode'] = $options['score_mode'];
         }
 
+        // Добавляем фильтры
+        if (isset($options['filter']) && !empty($options['filter'])) {
+            $currentQuery = $searchParams['body']['query'];
+            
+            // Если у нас уже bool query (с фильтрами), добавляем к существующим фильтрам
+            if (isset($currentQuery['bool'])) {
+                $searchParams['body']['query']['bool']['filter'] = array_merge(
+                    $currentQuery['bool']['filter'] ?? [],
+                    $this->buildFilterQuery($options['filter'])
+                );
+            } else {
+                // Преобразуем текущий query в bool query с фильтрами
+                $searchParams['body']['query'] = [
+                    'bool' => [
+                        'must' => [
+                            $currentQuery
+                        ],
+                        'filter' => $this->buildFilterQuery($options['filter'])
+                    ]
+                ];
+            }
+        }
+
         // Добавляем сортировку
         if (isset($options['sort'])) {
             $searchParams['body']['sort'] = $options['sort'];
@@ -303,16 +338,43 @@ class ElasticSearch
         }
 
         // Добавляем подсветку
-        if ($options['highlight'] ?? true) {
-            $searchParams['body']['highlight'] = [
-                'fields' => $this->getHighlightFields($config),
-            ];
-        }
+        //if ($options['highlight'] ?? true) {
+        //    $searchParams['body']['highlight'] = [
+        //        'fields' => $this->getHighlightFields($config),
+        //    ];
+        //}
 
         // Добавляем анализатор
         if (isset($options['analyzer'])) {
             $searchParams['body']['query']['multi_match']['analyzer'] = $options['analyzer'];
         }
+    }
+
+    /**
+     * Строит фильтр для Elasticsearch query
+     * 
+     * @param array $filters Массив фильтров
+     * @return array Массив фильтров для Elasticsearch
+     */
+    private function buildFilterQuery(array $filters): array
+    {
+        $filterQueries = [];
+        
+        foreach ($filters as $field => $value) {
+            if (is_array($value)) {
+                // Для массивов используем terms query
+                $filterQueries[] = [
+                    'terms' => $value
+                ];
+            } else {
+                // Для одиночных значений используем term query
+                $filterQueries[] = [
+                    'term' => $value
+                ];
+            }
+        }
+        
+        return $filterQueries;
     }
 
     /**
@@ -799,10 +861,17 @@ class ElasticSearch
             if (!empty($mainFields)) {
                 $selectFields = $mainFields;
                 
-                // Если есть relations, добавляем foreign keys
+                // Если есть relations, добавляем foreign keys и primary key
                 if (!empty($relations)) {
                     $foreignKeys = $this->getForeignKeysForRelations($modelClass, array_keys($relations));
                     $selectFields = array_merge($selectFields, $foreignKeys);
+                    
+                    // Добавляем primary key, если его нет в selectFields
+                    // Это необходимо для загрузки HasMany, HasOne relations
+                    $primaryKey = (new $modelClass())->getKeyName();
+                    if (!in_array($primaryKey, $selectFields)) {
+                        $selectFields[] = $primaryKey;
+                    }
                 }
                 
                 $query->select($selectFields);
@@ -811,24 +880,13 @@ class ElasticSearch
             // Добавляем отношения с их собственными select
             foreach ($relations as $relation => $relationConfig) {
                 $query->with([$relation => function ($query) use ($relationConfig) {
-                    if (isset($relationConfig['select']) && !empty($relationConfig['select'])) {
-                        $query->select($relationConfig['select']);
-                    }
-                    if (isset($relationConfig['with'])) {
-                        foreach ($relationConfig['with'] as $nestedRelation => $nestedConfig) {
-                            $query->with([$nestedRelation => function ($nestedQuery) use ($nestedConfig) {
-                                if (isset($nestedConfig['select']) && !empty($nestedConfig['select'])) {
-                                    $nestedQuery->select($nestedConfig['select']);
-                                }
-                            }]);
-                        }
-                    }
+                    $this->applyRelationConfig($query, $relationConfig);
                 }]);
             }
             
             // Фильтруем по ID и сохраняем порядок из Elasticsearch
             $query->whereIn('id', $ids);
-            
+
             // Получаем результаты
             $results = $query->get()->keyBy('id')->toArray();
             
@@ -881,6 +939,29 @@ class ElasticSearch
             
             return $config;
         });
+    }
+
+    /**
+     * Применяет конфигурацию к запросу отношения
+     * 
+     * @param \Illuminate\Database\Eloquent\Builder $query Запрос
+     * @param array $config Конфигурация отношения
+     */
+    protected function applyRelationConfig($query, array $config): void
+    {
+        // Применяем select для текущего уровня
+        if (isset($config['select']) && !empty($config['select'])) {
+            $query->select($config['select']);
+        }
+        
+        // Рекурсивно применяем вложенные relations
+        if (isset($config['with']) && !empty($config['with'])) {
+            foreach ($config['with'] as $nestedRelation => $nestedConfig) {
+                $query->with([$nestedRelation => function ($nestedQuery) use ($nestedConfig) {
+                    $this->applyRelationConfig($nestedQuery, $nestedConfig);
+                }]);
+            }
+        }
     }
 
     /**
@@ -950,12 +1031,18 @@ class ElasticSearch
         $relationMethod = $modelInstance->$relation();
         
         if ($relationMethod instanceof \Illuminate\Database\Eloquent\Relations\BelongsTo) {
+            // Для BelongsTo нужен foreign key в основной таблице
             return $relationMethod->getForeignKeyName();
         } elseif ($relationMethod instanceof \Illuminate\Database\Eloquent\Relations\HasOne) {
-            return $relationMethod->getForeignKeyName();
+            // Для HasOne foreign key находится в связанной таблице, но нам нужен primary key основной модели
+            // Laravel автоматически использует primary key для загрузки HasOne
+            return null;
         } elseif ($relationMethod instanceof \Illuminate\Database\Eloquent\Relations\HasMany) {
-            return $relationMethod->getForeignKeyName();
+            // Для HasMany foreign key находится в связанной таблице, но нам нужен primary key основной модели
+            // Laravel автоматически использует primary key для загрузки HasMany
+            return null;
         } elseif ($relationMethod instanceof \Illuminate\Database\Eloquent\Relations\BelongsToMany) {
+            // Для BelongsToMany нужен foreign key в pivot таблице
             return $relationMethod->getForeignPivotKeyName();
         }
         

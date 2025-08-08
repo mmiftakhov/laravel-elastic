@@ -158,9 +158,9 @@ class ElasticSearch
      * @param array $options Опции поиска
      * @return string Ключ кэша
      */
-    private function generateSearchCacheKey(string $modelClass, string $query, array $options): string
+    private function generateSearchCacheKey(string $modelClass, ?string $query, array $options): string
     {
-        return 'elastic_search_' . md5($modelClass . $query . serialize($options));
+        return 'elastic_search_' . md5($modelClass . (string) $query . serialize($options));
     }
 
     /**
@@ -243,6 +243,8 @@ class ElasticSearch
             'body' => [
                 'size' => $options['limit'] ?? 10,
                 'from' => $options['offset'] ?? 0,
+                // Гарантируем корректный подсчет общего количества результатов
+                'track_total_hits' => $options['track_total_hits'] ?? true,
             ],
         ];
         
@@ -295,13 +297,29 @@ class ElasticSearch
      */
     private function addOptionalSearchParams(array &$searchParams, array $options, array $config): void
     {
-        // Добавляем boost_mode и score_mode если указаны
-        if (isset($options['boost_mode'])) {
-            $searchParams['body']['query']['multi_match']['boost_mode'] = $options['boost_mode'];
-        }
-        
-        if (isset($options['score_mode'])) {
-            $searchParams['body']['query']['multi_match']['score_mode'] = $options['score_mode'];
+        // Корректная поддержка function_score: если указаны boost_mode/score_mode/functions —
+        // оборачиваем текущий query в function_score, вместо того чтобы пытаться задавать эти
+        // параметры внутри multi_match (что не поддерживается Elasticsearch)
+        $shouldWrapWithFunctionScore = isset($options['boost_mode']) || isset($options['score_mode']) || isset($options['functions']);
+        if ($shouldWrapWithFunctionScore) {
+            $currentQuery = $searchParams['body']['query'] ?? ['match_all' => new \stdClass()];
+            $functionScore = [
+                'function_score' => [
+                    'query' => $currentQuery,
+                ],
+            ];
+
+            if (isset($options['functions']) && is_array($options['functions'])) {
+                $functionScore['function_score']['functions'] = $options['functions'];
+            }
+            if (isset($options['boost_mode'])) {
+                $functionScore['function_score']['boost_mode'] = $options['boost_mode'];
+            }
+            if (isset($options['score_mode'])) {
+                $functionScore['function_score']['score_mode'] = $options['score_mode'];
+            }
+
+            $searchParams['body']['query'] = $functionScore;
         }
 
         // Добавляем фильтры
@@ -359,22 +377,102 @@ class ElasticSearch
     private function buildFilterQuery(array $filters): array
     {
         $filterQueries = [];
-        
-        foreach ($filters as $field => $value) {
+
+        foreach ($this->normalizeFilters($filters) as [$field, $value]) {
             if (is_array($value)) {
-                // Для массивов используем terms query
+                // Range: ['gte' => 10, 'lte' => 100]
+                if ($this->isRangeArray($value)) {
+                    $filterQueries[] = [
+                        'range' => [
+                            $field => $value,
+                        ],
+                    ];
+                    continue;
+                }
+
+                // Terms: numeric array of values
+                if (!$this->isAssoc($value)) {
+                    $filterQueries[] = [
+                        'terms' => [
+                            $field => array_values($value),
+                        ],
+                    ];
+                    continue;
+                }
+
+                // If associative array but not range, try to cast to terms if values keyed arbitrarily
                 $filterQueries[] = [
-                    'terms' => $value
+                    'terms' => [
+                        $field => array_values($value),
+                    ],
                 ];
             } else {
-                // Для одиночных значений используем term query
+                // Term: scalar value
                 $filterQueries[] = [
-                    'term' => $value
+                    'term' => [
+                        $field => $value,
+                    ],
                 ];
             }
         }
-        
+
         return $filterQueries;
+    }
+
+    /**
+     * Нормализует входные фильтры в список пар [field, value]
+     */
+    private function normalizeFilters(array $filters): array
+    {
+        $normalized = [];
+
+        // Вариант 1: список элементов, каждый из которых — ассоциативная пара field => value
+        $isList = array_keys($filters) === range(0, count($filters) - 1);
+        if ($isList) {
+            foreach ($filters as $item) {
+                if (is_array($item)) {
+                    foreach ($item as $field => $value) {
+                        $normalized[] = [$field, $value];
+                    }
+                }
+            }
+            return $normalized;
+        }
+
+        // Вариант 2: ассоциативный массив field => value
+        foreach ($filters as $field => $value) {
+            $normalized[] = [$field, $value];
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * Проверяет, является ли массив ассоциативным
+     */
+    private function isAssoc(array $array): bool
+    {
+        if ($array === []) {
+            return false;
+        }
+        return array_keys($array) !== range(0, count($array) - 1);
+    }
+
+    /**
+     * Проверяет, похож ли массив на range-условие
+     */
+    private function isRangeArray(array $array): bool
+    {
+        if ($array === []) {
+            return false;
+        }
+        $allowed = ['gte', 'lte', 'gt', 'lt'];
+        foreach (array_keys($array) as $key) {
+            if (!in_array($key, $allowed, true)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -1060,7 +1158,7 @@ class ElasticSearch
         // Кэшируем результат проверки существования индекса на 5 минут
         $cacheKey = 'index_exists_' . $indexName;
         
-        return Cache::remember($cacheKey, 3600, function() use ($indexName) {
+        return Cache::remember($cacheKey, 300, function() use ($indexName) {
             try {
                 // Используем API Elasticsearch 8.x для проверки существования индекса
                 $response = $this->elasticsearch->indices()->exists(['index' => $indexName]);

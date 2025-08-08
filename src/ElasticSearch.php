@@ -265,6 +265,11 @@ class ElasticSearch
                     'minimum_should_match' => $options['minimum_should_match'] ?? $searchSettings['minimum_should_match'] ?? '75%',
                 ],
             ];
+
+            // Добавляем анализатор только если используется multi_match на верхнем уровне
+            if (isset($options['analyzer'])) {
+                $searchParams['body']['query']['multi_match']['analyzer'] = $options['analyzer'];
+            }
         }
 
         // Оптимизированные условные проверки
@@ -362,10 +367,7 @@ class ElasticSearch
         //    ];
         //}
 
-        // Добавляем анализатор
-        if (isset($options['analyzer'])) {
-            $searchParams['body']['query']['multi_match']['analyzer'] = $options['analyzer'];
-        }
+        // analyzer уже устанавливается при построении multi_match выше, чтобы не нарушить структуру
     }
 
     /**

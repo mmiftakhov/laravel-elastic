@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] - 2024-12-19
+
+### Added
+- **NEW FEATURE**: Enhanced analyzer support for different locales in Elasticsearch indexing
+- **Performance Improvement**: Optimized analyzer selection for multilingual content
+- **Better Localization**: Improved handling of locale-specific analyzers for better search quality
+
+### Changed
+- **Indexing Logic**: Enhanced analyzer selection logic for translatable fields
+- **Locale Handling**: Better support for locale-specific analyzers in index mapping
+
+### Technical Improvements
+- **Analyzer Selection**: Improved `getAnalyzerForLocale()` method for better locale handling
+- **Index Mapping**: Enhanced index mapping generation with proper analyzer configuration
+
 ## [0.4.5] - 2024-12-19
 
 ### Added

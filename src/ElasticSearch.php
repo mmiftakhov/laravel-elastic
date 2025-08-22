@@ -254,22 +254,83 @@ class ElasticSearch
                 'match_all' => new \stdClass()
             ];
         } else {
-            // Обычный поиск
-            $searchParams['body']['query'] = [
-                'multi_match' => [
-                    'query' => $query,
-                    'fields' => $searchFields,
-                    'type' => $options['type'] ?? 'best_fields',
-                    'operator' => $options['operator'] ?? $searchSettings['operator'] ?? 'OR',
-                    'fuzziness' => $options['fuzziness'] ?? $searchSettings['fuzziness'] ?? 'AUTO',
-                    'minimum_should_match' => $options['minimum_should_match'] ?? $searchSettings['minimum_should_match'] ?? '75%',
-                ],
-            ];
+            // Многостратегийный поиск: текст + размеры + коды
+            // Разделяем поля на группы для специализированных подзапросов
+            [$textFields, $sizeFields, $codeFields] = $this->groupSearchFields($searchFields);
 
-            // Добавляем анализатор только если используется multi_match на верхнем уровне
-            if (isset($options['analyzer'])) {
-                $searchParams['body']['query']['multi_match']['analyzer'] = $options['analyzer'];
+            $shouldClauses = [];
+
+            if (!empty($textFields)) {
+                $textClause = [
+                    'multi_match' => [
+                        'query' => $query,
+                        'fields' => array_values($textFields),
+                        'type' => $options['type'] ?? 'best_fields',
+                        'operator' => $options['operator'] ?? $searchSettings['operator'] ?? 'OR',
+                        'fuzziness' => $options['fuzziness'] ?? $searchSettings['fuzziness'] ?? 'AUTO',
+                        'minimum_should_match' => $options['minimum_should_match'] ?? $searchSettings['minimum_should_match'] ?? '60%',
+                    ]
+                ];
+                if (isset($options['analyzer'])) {
+                    $textClause['multi_match']['analyzer'] = $options['analyzer'];
+                }
+                $shouldClauses[] = $textClause;
             }
+
+            if (!empty($sizeFields)) {
+                // Поиск по размерам: распределение терминов между полями (cross_fields)
+                $sizeBoost = $this->isNumericHeavyQuery($query) ? 8.0 : 3.0;
+                $shouldClauses[] = [
+                    'multi_match' => [
+                        'query' => $query,
+                        'fields' => array_values($sizeFields),
+                        'type' => 'cross_fields',
+                        'operator' => 'AND',
+                        'minimum_should_match' => '100%',
+                        'boost' => $sizeBoost,
+                    ]
+                ];
+            }
+
+            if (!empty($codeFields)) {
+                // Поиск по кодам с повышенным весом
+                $shouldClauses[] = [
+                    'multi_match' => [
+                        'query' => $query,
+                        'fields' => $this->withKeywordVariants(array_values($codeFields)),
+                        'type' => 'best_fields',
+                        'operator' => 'OR',
+                        'fuzziness' => 0,
+                        'minimum_should_match' => '1',
+                        'boost' => 2.0
+                    ]
+                ];
+            }
+
+            // Если по каким-то причинам группы пустые, откатываемся к универсальному multi_match
+            if (empty($shouldClauses)) {
+                $fallbackClause = [
+                    'multi_match' => [
+                        'query' => $query,
+                        'fields' => $searchFields,
+                        'type' => $options['type'] ?? 'best_fields',
+                        'operator' => $options['operator'] ?? $searchSettings['operator'] ?? 'OR',
+                        'fuzziness' => $options['fuzziness'] ?? $searchSettings['fuzziness'] ?? 'AUTO',
+                        'minimum_should_match' => $options['minimum_should_match'] ?? $searchSettings['minimum_should_match'] ?? '60%',
+                    ]
+                ];
+                if (isset($options['analyzer'])) {
+                    $fallbackClause['multi_match']['analyzer'] = $options['analyzer'];
+                }
+                $shouldClauses[] = $fallbackClause;
+            }
+
+            $searchParams['body']['query'] = [
+                'bool' => [
+                    'should' => $shouldClauses,
+                    'minimum_should_match' => 1,
+                ]
+            ];
         }
 
         // Оптимизированные условные проверки
@@ -279,6 +340,94 @@ class ElasticSearch
         Cache::put($cacheKey, $searchParams, 3600);
 
         return $searchParams;
+    }
+
+    /**
+     * Для полей code/isbn_code добавляет keyword-варианты с тем же бустом
+     * Например: code^4 => code^4, code.keyword^4
+     */
+    protected function withKeywordVariants(array $fields): array
+    {
+        $result = [];
+        foreach ($fields as $field) {
+            $result[] = $field;
+            $name = $field;
+            $boost = '';
+            $caretPos = strpos($field, '^');
+            if ($caretPos !== false) {
+                $name = substr($field, 0, $caretPos);
+                $boost = substr($field, $caretPos); // includes caret
+            }
+            if ($name === 'code' || $name === 'isbn_code') {
+                $result[] = $name . '.keyword' . $boost;
+            }
+        }
+        return array_values(array_unique($result));
+    }
+
+    /**
+     * Определяет, является ли запрос преимущественно числовым (размеры/коды)
+     */
+    protected function isNumericHeavyQuery(string $query): bool
+    {
+        $terms = preg_split('/\s+/', trim($query));
+        if (!$terms) {
+            return false;
+        }
+        $numeric = 0;
+        $total = 0;
+        foreach ($terms as $t) {
+            if ($t === '') continue;
+            $total++;
+            if (preg_match('/^\d+(?:[\.,]\d+)?$/u', $t)) {
+                $numeric++;
+            }
+        }
+        if ($total === 0) {
+            return false;
+        }
+        // Числовой, если >=2 числовых термов и доля >= 0.5
+        return $numeric >= 2 && ($numeric / $total) >= 0.5;
+    }
+
+    /**
+     * Группирует поля поиска на текстовые, размерные и кодовые
+     * 
+     * @param array $searchFields Поля с бустами (например, ['title_en^5','code^4'])
+     * @return array [textFields, sizeFields, codeFields]
+     */
+    protected function groupSearchFields(array $searchFields): array
+    {
+        $textFields = [];
+        $sizeFields = [];
+        $codeFields = [];
+
+        $isSizeField = function (string $name): bool {
+            return $name === 'internal_dia' || $name === 'outer_dia' || $name === 'width' || $name === 'size_terms';
+        };
+        $isCodeField = function (string $name): bool {
+            return $name === 'code' || $name === 'isbn_code' || $name === 'code.keyword' || $name === 'isbn_code.keyword';
+        };
+
+        foreach ($searchFields as $field) {
+            $name = $field;
+            $caretPos = strpos($name, '^');
+            if ($caretPos !== false) {
+                $name = substr($name, 0, $caretPos);
+            }
+
+            if ($isSizeField($name)) {
+                $sizeFields[] = $field; // сохраняем с бустом
+                continue;
+            }
+            if ($isCodeField($name)) {
+                $codeFields[] = $field; // сохраняем с бустом
+                continue;
+            }
+            $textFields[] = $field; // остальное — текст
+        }
+
+        return [$textFields, $sizeFields, $codeFields];
     }
 
     /**

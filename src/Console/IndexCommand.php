@@ -361,11 +361,22 @@ Options:
                 ];
             }
         } else {
-            // Для обычных полей создаем одно поле
-            $properties[$field] = [
-                'type' => 'text',
-                'analyzer' => 'standard',
-            ];
+            // Для обычных полей создаем одно поле, но с особыми случаями
+            if (in_array($field, ['code', 'isbn_code'], true)) {
+                // Коды индексируем как text + keyword подполе для точных совпадений
+                $properties[$field] = [
+                    'type' => 'text',
+                    'analyzer' => 'standard',
+                    'fields' => [
+                        'keyword' => ['type' => 'keyword']
+                    ],
+                ];
+            } else {
+                $properties[$field] = [
+                    'type' => 'text',
+                    'analyzer' => 'standard',
+                ];
+            }
         }
     }
 
@@ -1022,6 +1033,22 @@ Options:
                 if ($price <= 1000) return 'low';
                 if ($price <= 10000) return 'medium';
                 return 'high';
+            
+            case 'size_terms':
+                // Формируем унифицированную строку с целыми частями размеров
+                $values = [];
+                foreach (['internal_dia', 'outer_dia', 'width'] as $sizeField) {
+                    $raw = $record->getAttribute($sizeField);
+                    if ($raw === null || $raw === '') {
+                        continue;
+                    }
+                    // Нормализуем как float, затем берём целую часть для сопоставления с "95 114 11"
+                    $floatVal = (float) str_replace(',', '.', (string) $raw);
+                    if ($floatVal > 0) {
+                        $values[] = (string) (int) floor($floatVal + 1e-6);
+                    }
+                }
+                return implode(' ', array_filter($values));
             
             case 'popularity_score':
                 $viewsCount = $record->getAttribute('views_count') ?? 0;

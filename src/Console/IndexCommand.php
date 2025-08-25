@@ -154,7 +154,7 @@ Options:
         // Создаем экземпляр модели
         $model = new $modelClass();
         
-        // Применяем условия запроса из конфигурации
+        // Применяем условия запроса из конфигурации, если есть
         $query = $this->applyQueryConditions($model, $config);
         
         // Получаем общее количество записей
@@ -300,12 +300,20 @@ Options:
     {
         $properties = [];
         $translatableConfig = $this->getTranslatableConfig($config);
+        $mappingConfig = $config['mapping'] ?? [];
 
         // Добавляем поля для поиска
-        $this->buildMappingFromSearchableFields($config['searchable_fields'] ?? [], $properties, $translatableConfig);
+        $this->buildMappingFromSearchableFields($config['searchable_fields'] ?? [], $properties, $translatableConfig, $mappingConfig);
 
         // Добавляем вычисляемые поля
         foreach ($config['computed_fields'] ?? [] as $field => $fieldConfig) {
+            // Если для вычисляемого поля есть явный маппинг, используем его
+            if (isset($mappingConfig[$field])) {
+                $properties[$field] = $mappingConfig[$field];
+                continue;
+            }
+
+            // Иначе, используем базовую конфигурацию из computed_fields
             $properties[$field] = [
                 'type' => $fieldConfig['type'] ?? 'text',
             ];
@@ -326,16 +334,17 @@ Options:
      * @param array $searchableFields Поля для поиска
      * @param array $properties Свойства маппинга
      * @param array $translatableConfig Конфигурация translatable полей
+     * @param array $mappingConfig Конфигурация маппинга полей
      */
-    protected function buildMappingFromSearchableFields(array $searchableFields, array &$properties, array $translatableConfig): void
+    protected function buildMappingFromSearchableFields(array $searchableFields, array &$properties, array $translatableConfig, array $mappingConfig): void
     {
         foreach ($searchableFields as $field => $fieldConfig) {
             if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле (числовой ключ)
-                $this->addFieldToMapping($fieldConfig, $properties, $translatableConfig);
+                $this->addFieldToMapping($fieldConfig, $properties, $translatableConfig, $mappingConfig);
             } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Relation поля
-                $this->addRelationFieldsToMapping($field, $fieldConfig, $properties, $translatableConfig);
+                $this->addRelationFieldsToMapping($field, $fieldConfig, $properties, $translatableConfig, $mappingConfig);
             }
         }
     }
@@ -346,8 +355,9 @@ Options:
      * @param string $field Имя поля
      * @param array $properties Свойства маппинга
      * @param array $translatableConfig Конфигурация translatable полей
+     * @param array $mappingConfig Конфигурация маппинга полей
      */
-    protected function addFieldToMapping(string $field, array &$properties, array $translatableConfig): void
+    protected function addFieldToMapping(string $field, array &$properties, array $translatableConfig, array $mappingConfig): void
     {
         $isTranslatable = $this->isFieldTranslatable($field, $translatableConfig);
         
@@ -355,28 +365,13 @@ Options:
             // Для translatable полей создаем поля для каждого языка
             foreach ($translatableConfig['locales'] as $locale) {
                 $localizedField = $field . '_' . $locale;
-                $properties[$localizedField] = [
-                    'type' => 'text',
-                    'analyzer' => $this->getAnalyzerForLocale($locale),
-                ];
+                $fieldMapping = $mappingConfig[$field] ?? ['type' => 'text'];
+                $fieldMapping['analyzer'] = $this->getAnalyzerForLocale($locale);
+                $properties[$localizedField] = $fieldMapping;
             }
         } else {
-            // Для обычных полей создаем одно поле, но с особыми случаями
-            if (in_array($field, ['code', 'isbn_code'], true)) {
-                // Коды индексируем как text + keyword подполе для точных совпадений
-                $properties[$field] = [
-                    'type' => 'text',
-                    'analyzer' => 'standard',
-                    'fields' => [
-                        'keyword' => ['type' => 'keyword']
-                    ],
-                ];
-            } else {
-                $properties[$field] = [
-                    'type' => 'text',
-                    'analyzer' => 'standard',
-                ];
-            }
+            // Для обычных полей используем явный маппинг или значение по умолчанию
+            $properties[$field] = $mappingConfig[$field] ?? ['type' => 'text'];
         }
     }
 
@@ -387,17 +382,18 @@ Options:
      * @param array $relationFields Поля relation
      * @param array $properties Свойства маппинга
      * @param array $translatableConfig Конфигурация translatable полей
+     * @param array $mappingConfig Конфигурация маппинга полей
      */
-    protected function addRelationFieldsToMapping(string $relationName, array $relationFields, array &$properties, array $translatableConfig): void
+    protected function addRelationFieldsToMapping(string $relationName, array $relationFields, array &$properties, array $translatableConfig, array $mappingConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
             if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле в relation
                 $fullField = $relationName . '.' . $fieldConfig;
-                $this->addFieldToMapping($fullField, $properties, $translatableConfig);
+                $this->addFieldToMapping($fullField, $properties, $translatableConfig, $mappingConfig);
             } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Вложенное relation
-                $this->addNestedRelationFieldsToMapping($relationName . '.' . $field, $fieldConfig, $properties, $translatableConfig);
+                $this->addNestedRelationFieldsToMapping($relationName . '.' . $field, $fieldConfig, $properties, $translatableConfig, $mappingConfig);
             }
         }
     }
@@ -409,17 +405,18 @@ Options:
      * @param array $relationFields Поля relation
      * @param array $properties Свойства маппинга
      * @param array $translatableConfig Конфигурация translatable полей
+     * @param array $mappingConfig Конфигурация маппинга полей
      */
-    protected function addNestedRelationFieldsToMapping(string $relationPath, array $relationFields, array &$properties, array $translatableConfig): void
+    protected function addNestedRelationFieldsToMapping(string $relationPath, array $relationFields, array &$properties, array $translatableConfig, array $mappingConfig): void
     {
         foreach ($relationFields as $field => $fieldConfig) {
             if (is_numeric($field) && is_string($fieldConfig)) {
                 // Простое поле во вложенном relation
                 $fullField = $relationPath . '.' . $fieldConfig;
-                $this->addFieldToMapping($fullField, $properties, $translatableConfig);
+                $this->addFieldToMapping($fullField, $properties, $translatableConfig, $mappingConfig);
             } elseif (is_string($field) && is_array($fieldConfig)) {
                 // Еще более вложенное relation
-                $this->addNestedRelationFieldsToMapping($relationPath . '.' . $field, $fieldConfig, $properties, $translatableConfig);
+                $this->addNestedRelationFieldsToMapping($relationPath . '.' . $field, $fieldConfig, $properties, $translatableConfig, $mappingConfig);
             }
         }
     }

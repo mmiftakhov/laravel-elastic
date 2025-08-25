@@ -9,9 +9,7 @@ use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
 
 /**
- * ElasticSearch - основной класс для работы с Elasticsearch
- * 
- * Предоставляет удобный API для поиска в Elasticsearch с поддержкой:
+ * ElasticSearch - основной класс для работы с Elasticsearch с поддержкой:
  * - Multi-field mapping с boost значениями
  * - Подсветки результатов
  * - Мультиязычности (translatable поля)
@@ -78,12 +76,7 @@ class ElasticSearch
     {
         $startTime = microtime(true);
         
-        // Кэшируем результаты для одинаковых запросов
-        $cacheKey = $this->generateSearchCacheKey($modelClass, $query, $options);
-        $cachedResult = Cache::get($cacheKey);
-        if ($cachedResult !== null) {
-            return $cachedResult;
-        }
+        // кеширование отключено для отладки
 
         try {
             // Получаем конфигурацию модели
@@ -112,14 +105,14 @@ class ElasticSearch
             // Выполняем поиск
             $response = $this->elasticsearch->search([
                 'index' => $indexName,
-                ...$searchParams
+                'body' => $searchParams['body']
             ]);
 
             // Форматируем результаты
             $results = $this->formatResults($response->asArray(), $config, $options);
 
             // Кэшируем результат на 5 минут
-            Cache::put($cacheKey, $results, 300);
+            // cache disabled
 
             $endTime = microtime(true);
             $executionTime = ($endTime - $startTime) * 1000;
@@ -220,15 +213,34 @@ class ElasticSearch
      */
     protected function buildSearchParams(string $query, array $config, array $options = []): array
     {
-        // Кэшируем параметры для одинаковых запросов
-        $cacheKey = $this->generateBuildParamsCacheKey($query, $config, $options);
-        $cachedParams = Cache::get($cacheKey);
-        if ($cachedParams !== null) {
-            return $cachedParams;
+        // Получаем поля для поиска с учетом boost из конфигурации
+        $searchFields = $this->getSearchFieldsWithBoost($config, null, null);
+        
+        // Убираем поля, которые заведомо не текстовые (id-интовые), чтобы избежать ошибок fuzzy на integer
+        $searchFields = array_values(array_filter($searchFields, static function ($field) {
+            // убрать boost часть
+            $name = explode('^', $field)[0];
+            return !str_ends_with($name, '.id') && $name !== 'id';
+        }));
+        
+        // По требованию проекта не полагаться на size_terms: удаляем поле,
+        // если оно не сконфигурировано явно в mapping/computed_fields
+        $hasSizeTerms = isset($config['mapping']['size_terms']) || isset($config['computed_fields']['size_terms']);
+        if (!$hasSizeTerms) {
+            $searchFields = array_values(array_filter($searchFields, static function ($field) {
+                $name = explode('^', $field)[0];
+                return $name !== 'size_terms';
+            }));
         }
 
-        // Получаем поля для поиска с учетом boost из конфигурации
-        $searchFields = $this->getSearchFieldsWithBoost($config, $options['fields'] ?? null, $options['boost'] ?? null);
+        // Дополнительно исключаем все non-text поля из mapping
+        $mapping = $config['mapping'] ?? [];
+        $searchFields = array_values(array_filter($searchFields, function ($field) use ($mapping) {
+            $name = explode('^', $field)[0];
+            $type = $mapping[$name]['type'] ?? 'text';
+            return $type === 'text' || $type === 'keyword';
+        }));
+        
         $searchSettings = $this->getCachedSearchSettings();
 
         // Проверяем, что у нас есть поля для поиска
@@ -236,110 +248,106 @@ class ElasticSearch
             throw new \RuntimeException("No search fields found. Check configuration.");
         }
 
-        // Проверяем, пустой ли запрос
         $isEmptyQuery = empty(trim($query));
         
         $searchParams = [
             'body' => [
                 'size' => $options['limit'] ?? 10,
                 'from' => $options['offset'] ?? 0,
-                // Гарантируем корректный подсчет общего количества результатов
-                'track_total_hits' => $options['track_total_hits'] ?? true,
+                'track_total_hits' => true,
             ],
         ];
         
         if ($isEmptyQuery) {
-            // Если запрос пустой, используем match_all для получения всех записей
-            $searchParams['body']['query'] = [
-                'match_all' => new \stdClass()
-            ];
+            $searchParams['body']['query'] = ['match_all' => new \stdClass()];
         } else {
-            // Многостратегийный поиск: текст + размеры + коды
-            // Разделяем поля на группы для специализированных подзапросов
-            [$textFields, $sizeFields, $codeFields] = $this->groupSearchFields($searchFields);
-
-            $shouldClauses = [];
-
+            // Группируем поля по типам для более эффективного поиска
+            [$textFields, $sizeFields, $codeFields] = $this->groupSearchFields($searchFields, $config);
+            
+            // Строим bool query с несколькими стратегиями поиска
+            $boolQuery = [
+                'bool' => [
+                    'should' => [],
+                    'minimum_should_match' => 1,
+                ]
+            ];
+            
+            // 1. Основной текстовый поиск (названия, описания)
             if (!empty($textFields)) {
-                $textClause = [
+                $boolQuery['bool']['should'][] = [
                     'multi_match' => [
                         'query' => $query,
-                        'fields' => array_values($textFields),
-                        'type' => $options['type'] ?? 'best_fields',
-                        'operator' => $options['operator'] ?? $searchSettings['operator'] ?? 'OR',
-                        'fuzziness' => $options['fuzziness'] ?? $searchSettings['fuzziness'] ?? 'AUTO',
-                        'minimum_should_match' => $options['minimum_should_match'] ?? $searchSettings['minimum_should_match'] ?? '60%',
-                    ]
-                ];
-                if (isset($options['analyzer'])) {
-                    $textClause['multi_match']['analyzer'] = $options['analyzer'];
-                }
-                $shouldClauses[] = $textClause;
-            }
-
-            if (!empty($sizeFields)) {
-                // Поиск по размерам: распределение терминов между полями (cross_fields)
-                $sizeBoost = $this->isNumericHeavyQuery($query) ? 8.0 : 3.0;
-                $shouldClauses[] = [
-                    'multi_match' => [
-                        'query' => $query,
-                        'fields' => array_values($sizeFields),
-                        'type' => 'cross_fields',
-                        'operator' => 'AND',
-                        'minimum_should_match' => '100%',
-                        'boost' => $sizeBoost,
-                    ]
-                ];
-            }
-
-            if (!empty($codeFields)) {
-                // Поиск по кодам с повышенным весом
-                $shouldClauses[] = [
-                    'multi_match' => [
-                        'query' => $query,
-                        'fields' => $this->withKeywordVariants(array_values($codeFields)),
+                        'fields' => $textFields,
                         'type' => 'best_fields',
-                        'operator' => 'OR',
-                        'fuzziness' => 0,
-                        'minimum_should_match' => '1',
+                        'operator' => $searchSettings['operator'] ?? 'OR',
+                        'fuzziness' => $searchSettings['fuzziness'] ?? 'AUTO',
+                        'minimum_should_match' => '60%',
+                        'boost' => 1.0
+                    ]
+                ];
+            }
+            
+            // 2. Поиск по размерам (size_terms) - специальное поле для размерных запросов
+            if (!empty($sizeFields) && $this->isNumericHeavyQuery($query)) {
+                $boolQuery['bool']['should'][] = [
+                    'multi_match' => [
+                        'query' => $query,
+                        'fields' => $sizeFields,
+                        'type' => 'phrase_prefix',
                         'boost' => 2.0
                     ]
                 ];
             }
-
-            // Если по каким-то причинам группы пустые, откатываемся к универсальному multi_match
-            if (empty($shouldClauses)) {
-                $fallbackClause = [
+            
+            // 3. Поиск по кодам (точные и частичные совпадения)
+            if (!empty($codeFields)) {
+                $boolQuery['bool']['should'][] = [
                     'multi_match' => [
                         'query' => $query,
-                        'fields' => $searchFields,
-                        'type' => $options['type'] ?? 'best_fields',
-                        'operator' => $options['operator'] ?? $searchSettings['operator'] ?? 'OR',
-                        'fuzziness' => $options['fuzziness'] ?? $searchSettings['fuzziness'] ?? 'AUTO',
-                        'minimum_should_match' => $options['minimum_should_match'] ?? $searchSettings['minimum_should_match'] ?? '60%',
+                        'fields' => $codeFields,
+                        'type' => 'best_fields',
+                        'boost' => 1.5
                     ]
                 ];
-                if (isset($options['analyzer'])) {
-                    $fallbackClause['multi_match']['analyzer'] = $options['analyzer'];
-                }
-                $shouldClauses[] = $fallbackClause;
             }
-
-            $searchParams['body']['query'] = [
-                'bool' => [
-                    'should' => $shouldClauses,
-                    'minimum_should_match' => 1,
-                ]
-            ];
+            
+            // 4. Префиксный поиск для автодополнения (только для text полей)
+            $prefixFields = $this->getPrefixSearchableFields($searchFields);
+            if (!empty($prefixFields)) {
+                $boolQuery['bool']['should'][] = [
+                    'multi_match' => [
+                        'query' => $query,
+                        'fields' => $prefixFields,
+                        'type' => 'best_fields',
+                        'boost' => 0.8
+                    ]
+                ];
+            }
+            
+            $searchParams['body']['query'] = $boolQuery;
         }
 
-        // Оптимизированные условные проверки
         $this->addOptionalSearchParams($searchParams, $options, $config);
 
-        // Кэшируем результат на 1 час
-        Cache::put($cacheKey, $searchParams, 3600);
-
         return $searchParams;
+    }
+
+    /**
+     * Получает поля, подходящие для префиксного поиска (например, title, slug)
+     * @param array $fields
+     * @return array
+     */
+    protected function getPrefixSearchableFields(array $fields): array
+    {
+        $filtered = [];
+        foreach ($fields as $field) {
+            $fieldName = explode('^', $field)[0];
+            if (str_contains($fieldName, 'title') || str_contains($fieldName, 'slug') || str_contains($fieldName, 'code')) {
+                 // Для префиксного поиска используем keyword-поля, если они есть
+                $filtered[] = str_ends_with($fieldName, '.keyword') ? $fieldName : $fieldName . '.keyword';
+            }
+        }
+        return array_unique($filtered);
     }
 
     /**
@@ -396,17 +404,19 @@ class ElasticSearch
      * @param array $searchFields Поля с бустами (например, ['title_en^5','code^4'])
      * @return array [textFields, sizeFields, codeFields]
      */
-    protected function groupSearchFields(array $searchFields): array
+    protected function groupSearchFields(array $searchFields, array $config): array
     {
         $textFields = [];
         $sizeFields = [];
         $codeFields = [];
 
-        $isSizeField = function (string $name): bool {
-            return $name === 'internal_dia' || $name === 'outer_dia' || $name === 'width' || $name === 'size_terms';
+        $hasSizeTerms = isset($config['mapping']['size_terms']) || isset($config['computed_fields']['size_terms']);
+        $isSizeField = function (string $name) use ($hasSizeTerms): bool {
+            // Ищем только в size_terms, и только если поле реально индексируется
+            return $hasSizeTerms && $name === 'size_terms';
         };
         $isCodeField = function (string $name): bool {
-            return $name === 'code' || $name === 'isbn_code' || $name === 'code.keyword' || $name === 'isbn_code.keyword';
+            return $name === 'code' || $name === 'isbn_code' || str_ends_with($name, '.keyword');
         };
 
         foreach ($searchFields as $field) {
@@ -417,14 +427,20 @@ class ElasticSearch
             }
 
             if ($isSizeField($name)) {
-                $sizeFields[] = $field; // сохраняем с бустом
+                $sizeFields[] = $field;
                 continue;
             }
             if ($isCodeField($name)) {
-                $codeFields[] = $field; // сохраняем с бустом
+                $codeFields[] = $field;
                 continue;
             }
-            $textFields[] = $field; // остальное — текст
+
+            // Исключаем числовые поля из текстового поиска
+            if (in_array($name, ['internal_dia', 'outer_dia', 'width'])) {
+                continue;
+            }
+
+            $textFields[] = $field;
         }
 
         return [$textFields, $sizeFields, $codeFields];
@@ -479,23 +495,37 @@ class ElasticSearch
         // Добавляем фильтры
         if (isset($options['filter']) && !empty($options['filter'])) {
             $currentQuery = $searchParams['body']['query'];
-            
+
+            // Если у нас уже есть bool-обертка от function_score, используем её
+            if (isset($currentQuery['function_score'])) {
+                $queryToWrap = $currentQuery['function_score']['query'];
+            } else {
+                $queryToWrap = $currentQuery;
+            }
+
             // Если у нас уже bool query (с фильтрами), добавляем к существующим фильтрам
-            if (isset($currentQuery['bool'])) {
-                $searchParams['body']['query']['bool']['filter'] = array_merge(
-                    $currentQuery['bool']['filter'] ?? [],
+            if (isset($queryToWrap['bool'])) {
+                $queryToWrap['bool']['filter'] = array_merge(
+                    $queryToWrap['bool']['filter'] ?? [],
                     $this->buildFilterQuery($options['filter'])
                 );
             } else {
                 // Преобразуем текущий query в bool query с фильтрами
-                $searchParams['body']['query'] = [
+                $queryToWrap = [
                     'bool' => [
                         'must' => [
-                            $currentQuery
+                            $queryToWrap
                         ],
                         'filter' => $this->buildFilterQuery($options['filter'])
                     ]
                 ];
+            }
+
+            // Возвращаем измененный query на место
+            if (isset($currentQuery['function_score'])) {
+                $searchParams['body']['query']['function_score']['query'] = $queryToWrap;
+            } else {
+                $searchParams['body']['query'] = $queryToWrap;
             }
         }
 
@@ -510,13 +540,103 @@ class ElasticSearch
         }
 
         // Добавляем подсветку
-        //if ($options['highlight'] ?? true) {
-        //    $searchParams['body']['highlight'] = [
-        //        'fields' => $this->getHighlightFields($config),
-        //    ];
-        //}
+        if ($options['highlight'] ?? true) {
+            $searchParams['body']['highlight'] = [
+                'fields' => $this->getHighlightFields($config),
+            ];
+        }
+
+        // Переопределение track_total_hits при необходимости
+        if (isset($options['track_total_hits'])) {
+            $searchParams['body']['track_total_hits'] = (bool) $options['track_total_hits'];
+        }
 
         // analyzer уже устанавливается при построении multi_match выше, чтобы не нарушить структуру
+    }
+
+    /**
+     * Выполняет мультипоиск по нескольким моделям одним запросом msearch
+     *
+     * @param array $requests Массив запросов формата:
+     *  [
+     *      [ 'model' => ModelClass, 'query' => string, 'options' => array ],
+     *      ...
+     *  ]
+     * @return array Ассоциативный массив: modelClass => Collection результатов
+     */
+    public function multiSearch(array $requests): array
+    {
+        $startTime = microtime(true);
+        $resultsByModel = [];
+
+        try {
+            $modelsConfig = $this->getCachedModelsConfig();
+
+            $body = [];
+            $configs = [];
+            $optionsList = [];
+            $modelClasses = [];
+
+            foreach ($requests as $req) {
+                $modelClass = $req['model'];
+                $query = (string) ($req['query'] ?? '');
+                $options = (array) ($req['options'] ?? []);
+
+                $config = $modelsConfig[$modelClass] ?? null;
+                if (!$config) {
+                    throw new \InvalidArgumentException("Configuration not found for model: {$modelClass}");
+                }
+
+                $indexName = $this->getIndexName($config);
+                if (!$this->indexExists($indexName)) {
+                    // Пустой ответ для несуществующего индекса
+                    $empty = collect([])->put('_meta', [
+                        'total' => 0,
+                        'max_score' => 0,
+                        'took' => 0,
+                    ]);
+                    $resultsByModel[$modelClass] = $empty;
+                    continue;
+                }
+
+                $searchParams = $this->buildSearchParams($query, $config, $options);
+                $body[] = ['index' => $indexName];
+                $body[] = $searchParams['body'];
+                $configs[] = $config;
+                $optionsList[] = $options;
+                $modelClasses[] = $modelClass;
+            }
+
+            if (!empty($body)) {
+                $response = $this->elasticsearch->msearch(['body' => $body]);
+                $responses = $response->asArray()['responses'] ?? [];
+
+                foreach ($responses as $i => $res) {
+                    $config = $configs[$i] ?? [];
+                    $options = $optionsList[$i] ?? [];
+                    $modelClass = $modelClasses[$i] ?? 'unknown';
+                    $resultsByModel[$modelClass] = $this->formatResults($res, $config, $options);
+                }
+            }
+
+            $endTime = microtime(true);
+            $executionTime = ($endTime - $startTime) * 1000;
+            Log::info('ElasticSearch msearch completed', [
+                'models' => $modelClasses,
+                'execution_time_ms' => round($executionTime, 2),
+            ]);
+
+            return $resultsByModel;
+
+        } catch (\Exception $e) {
+            $endTime = microtime(true);
+            $executionTime = ($endTime - $startTime) * 1000;
+            Log::error('ElasticSearch msearch failed', [
+                'error' => $e->getMessage(),
+                'execution_time_ms' => round($executionTime, 2),
+            ]);
+            throw new \RuntimeException('msearch failed: ' . $e->getMessage(), 0, $e);
+        }
     }
 
     /**
@@ -962,7 +1082,7 @@ class ElasticSearch
                     $item['_id'] = $id;
                     
                     // Добавляем подсветку
-                    //$this->addHighlightsToItem($item, $highlights[$id] ?? []); временно отключено
+                    $this->addHighlightsToItem($item, $highlights[$id] ?? []);
                     
                     $results[] = $item;
                 }

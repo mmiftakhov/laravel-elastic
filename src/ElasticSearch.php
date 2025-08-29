@@ -102,6 +102,12 @@ class ElasticSearch
             // Строим параметры поиска
             $searchParams = $this->buildSearchParams($query, $config, $options);
 
+            // Логируем построенный запрос для отладки
+            Log::debug('ElasticSearch search request', [
+                'index' => $indexName,
+                'body' => $searchParams['body'] ?? [],
+            ]);
+
             // Выполняем поиск
             $response = $this->elasticsearch->search([
                 'index' => $indexName,
@@ -215,6 +221,8 @@ class ElasticSearch
     {
         // Получаем поля для поиска с учетом boost из конфигурации
         $searchFields = $this->getSearchFieldsWithBoost($config, null, null);
+        // Добавляем keyword-варианты для кодовых полей (code/isbn_code)
+        $searchFields = $this->withKeywordVariants($searchFields);
         
         // Убираем поля, которые заведомо не текстовые (id-интовые), чтобы избежать ошибок fuzzy на integer
         $searchFields = array_values(array_filter($searchFields, static function ($field) {
@@ -248,6 +256,11 @@ class ElasticSearch
             throw new \RuntimeException("No search fields found. Check configuration.");
         }
 
+        // Токенизируем запрос на текстовые и числовые части
+        $tokens = $this->parseQueryTokens($query);
+        $textQuery = trim(implode(' ', $tokens['text']));
+        $numericMatches = $this->mapSizeTokensToFieldMatches($tokens['numbers']);
+
         $isEmptyQuery = empty(trim($query));
         
         $searchParams = [
@@ -274,9 +287,12 @@ class ElasticSearch
             
             // 1. Основной текстовый поиск (названия, описания)
             if (!empty($textFields)) {
+                // Защита: оставляем только строковые поля
+                $textFields = array_values(array_filter($textFields, 'is_string'));
                 $boolQuery['bool']['should'][] = [
                     'multi_match' => [
-                        'query' => $query,
+                        // Используем только текстовые токены, чтобы числа не мешали fuzziness
+                        'query' => $textQuery !== '' ? $textQuery : $query,
                         'fields' => $textFields,
                         'type' => 'best_fields',
                         'operator' => $searchSettings['operator'] ?? 'OR',
@@ -289,6 +305,8 @@ class ElasticSearch
             
             // 2. Поиск по размерам (size_terms) - специальное поле для размерных запросов
             if (!empty($sizeFields) && $this->isNumericHeavyQuery($query)) {
+                // Защита: оставляем только строковые поля
+                $sizeFields = array_values(array_filter($sizeFields, 'is_string'));
                 $boolQuery['bool']['should'][] = [
                     'multi_match' => [
                         'query' => $query,
@@ -301,6 +319,8 @@ class ElasticSearch
             
             // 3. Поиск по кодам (точные и частичные совпадения)
             if (!empty($codeFields)) {
+                // Защита: оставляем только строковые поля
+                $codeFields = array_values(array_filter($codeFields, 'is_string'));
                 $boolQuery['bool']['should'][] = [
                     'multi_match' => [
                         'query' => $query,
@@ -314,17 +334,44 @@ class ElasticSearch
             // 4. Префиксный поиск для автодополнения (только для text полей)
             $prefixFields = $this->getPrefixSearchableFields($searchFields);
             if (!empty($prefixFields)) {
+                // Защита: оставляем только строковые поля
+                $prefixFields = array_values(array_filter($prefixFields, 'is_string'));
                 $boolQuery['bool']['should'][] = [
                     'multi_match' => [
                         'query' => $query,
                         'fields' => $prefixFields,
-                        'type' => 'best_fields',
+                        // bool_prefix дает корректный префиксный матч последнего терма
+                        'type' => 'bool_prefix',
                         'boost' => 0.8
                     ]
                 ];
             }
+
+            // 5. Диапазонные условия по размерным полям на основе выделенных чисел
+            if (!empty($numericMatches)) {
+                $rangeShoulds = $this->buildSizeRangeShouldClauses($numericMatches);
+                foreach ($rangeShoulds as $rangeClause) {
+                    $boolQuery['bool']['should'][] = $rangeClause;
+                }
+            }
             
+            // Базовый query
             $searchParams['body']['query'] = $boolQuery;
+
+            // 6. Повышаем релевантность близких по размеру позиций через function_score/gauss
+            if (!empty($numericMatches)) {
+                $gaussFunctions = $this->buildSizeFunctionScoreFunctions($numericMatches, $config);
+                if (!empty($gaussFunctions)) {
+                    $searchParams['body']['query'] = [
+                        'function_score' => [
+                            'query' => $searchParams['body']['query'],
+                            'functions' => $gaussFunctions,
+                            'score_mode' => 'sum',
+                            'boost_mode' => 'multiply',
+                        ],
+                    ];
+                }
+            }
         }
 
         $this->addOptionalSearchParams($searchParams, $options, $config);
@@ -608,6 +655,11 @@ class ElasticSearch
             }
 
             if (!empty($body)) {
+                // Логируем msearch запрос для отладки (заголовок/тело попарно)
+                Log::debug('ElasticSearch msearch request', [
+                    'models' => $modelClasses,
+                    'body' => $body,
+                ]);
                 $response = $this->elasticsearch->msearch(['body' => $body]);
                 $responses = $response->asArray()['responses'] ?? [];
 
@@ -1689,5 +1741,131 @@ class ElasticSearch
                 $this->extractNestedRelationHighlightFields($relationPath . '.' . $field, $fieldConfig, $highlightFields, $translatableConfig);
             }
         }
+    }
+
+    /**
+     * Токенизирует запрос на текстовые и числовые части.
+     * Разделители: пробелы, символы 'x', '×', '*', '/', '-', '_', ',', ';', ':', '+', скобки.
+     * Возвращает массив с ключами 'text' и 'numbers'.
+     */
+    protected function parseQueryTokens(string $query): array
+    {
+        $lower = mb_strtolower($query, 'UTF-8');
+        $parts = preg_split('/[x×\*\/\-_,;:\+\(\)\[\]\s]+/u', $lower, -1, PREG_SPLIT_NO_EMPTY);
+        $text = [];
+        $numbers = [];
+        if ($parts) {
+            foreach ($parts as $p) {
+                if (preg_match('/^\d+(?:[\.,]\d+)?$/u', $p)) {
+                    $numbers[] = (float) str_replace(',', '.', $p);
+                } else {
+                    $text[] = $p;
+                }
+            }
+        }
+        return ['text' => $text, 'numbers' => $numbers];
+    }
+
+    /**
+     * Маппит числовые токены на размерные поля.
+     * Возвращает список элементов вида ['field' => string, 'value' => float, 'weight' => float].
+     */
+    protected function mapSizeTokensToFieldMatches(array $numbers): array
+    {
+        $matches = [];
+        $count = count($numbers);
+        if ($count >= 3) {
+            // Порядок: внутренний диаметр, внешний диаметр, ширина
+            $matches[] = ['field' => 'internal_dia', 'value' => (float) $numbers[0], 'weight' => 1.0];
+            $matches[] = ['field' => 'outer_dia', 'value' => (float) $numbers[1], 'weight' => 1.0];
+            $matches[] = ['field' => 'width', 'value' => (float) $numbers[2], 'weight' => 1.0];
+        } elseif ($count === 2) {
+            $matches[] = ['field' => 'internal_dia', 'value' => (float) $numbers[0], 'weight' => 1.0];
+            $matches[] = ['field' => 'outer_dia', 'value' => (float) $numbers[1], 'weight' => 1.0];
+        } elseif ($count === 1) {
+            // Неизвестно какое поле, пробуем все с меньшим весом
+            $val = (float) $numbers[0];
+            $matches[] = ['field' => 'internal_dia', 'value' => $val, 'weight' => 0.6];
+            $matches[] = ['field' => 'outer_dia', 'value' => $val, 'weight' => 0.6];
+            $matches[] = ['field' => 'width', 'value' => $val, 'weight' => 0.6];
+        }
+        return $matches;
+    }
+
+    /**
+     * Создает range-условия (should) для размерных полей на основе токенов.
+     */
+    protected function buildSizeRangeShouldClauses(array $sizeMatches): array
+    {
+        if (empty($sizeMatches)) {
+            return [];
+        }
+
+        $tolerance = [
+            'internal_dia' => 1.0,
+            'outer_dia' => 1.0,
+            'width' => 0.6,
+        ];
+
+        $should = [];
+        foreach ($sizeMatches as $m) {
+            $field = $m['field'];
+            $value = (float) $m['value'];
+            $tol = $tolerance[$field] ?? 1.0;
+            $should[] = [
+                'range' => [
+                    $field => [
+                        'gte' => $value - $tol,
+                        'lte' => $value + $tol,
+                        'boost' => max(0.1, (float) $m['weight'] * 0.5),
+                    ],
+                ],
+            ];
+        }
+
+        return $should;
+    }
+
+    /**
+     * Создает функции для function_score (gauss) для повышения близости размеров.
+     */
+    protected function buildSizeFunctionScoreFunctions(array $sizeMatches, array $config): array
+    {
+        if (empty($sizeMatches)) {
+            return [];
+        }
+
+        $boostConfig = $config['searchable_fields_boost'] ?? [];
+        $baseWeights = [
+            'internal_dia' => (float) ($boostConfig['internal_dia'] ?? 1.0),
+            'outer_dia' => (float) ($boostConfig['outer_dia'] ?? 1.0),
+            'width' => (float) ($boostConfig['width'] ?? 1.0),
+        ];
+
+        $scale = [
+            'internal_dia' => 2,
+            'outer_dia' => 2,
+            'width' => 1.5,
+        ];
+
+        $functions = [];
+        foreach ($sizeMatches as $m) {
+            $field = $m['field'];
+            $value = (float) $m['value'];
+            $weight = ($baseWeights[$field] ?? 1.0) * (float) ($m['weight'] ?? 1.0);
+            $functions[] = [
+                'gauss' => [
+                    $field => [
+                        'origin' => $value,
+                        'scale' => $scale[$field] ?? 2,
+                        'offset' => 0,
+                        'decay' => 0.5,
+                    ],
+                ],
+                'weight' => $weight,
+            ];
+        }
+
+        return $functions;
     }
 } 

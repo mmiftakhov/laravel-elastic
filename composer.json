@@ -1,7 +1,7 @@
 {
     "name": "maratmiftahov/laravel-elastic",
     "description": "Simple and powerful Elasticsearch integration for Laravel with automatic indexing and multilingual support",
-    "version": "0.4.10",
+    "version": "0.5.0",
     "type": "library",
     "license": "MIT",
     "authors": [

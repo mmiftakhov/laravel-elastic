@@ -6,6 +6,7 @@ use Elastic\Elasticsearch\Client;
 use Elastic\Elasticsearch\ClientBuilder;
 use Illuminate\Support\ServiceProvider;
 use Maratmiftahov\LaravelElastic\Console\IndexCommand;
+use Maratmiftahov\LaravelElastic\ElasticSearch;
 
 class ElasticServiceProvider extends ServiceProvider
 {
@@ -18,6 +19,11 @@ class ElasticServiceProvider extends ServiceProvider
             return ClientBuilder::create()
                 ->setHosts($hosts)
                 ->build();
+        });
+
+        $this->app->singleton(ElasticSearch::class, function ($app) {
+            $cache = $app->has('cache.store') ? $app->make('cache.store') : null;
+            return new ElasticSearch($app->make(Client::class), $cache);
         });
     }
 

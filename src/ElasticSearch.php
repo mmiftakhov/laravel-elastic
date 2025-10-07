@@ -52,25 +52,73 @@ class ElasticSearch
 
     public function multiSearch(array $modelClasses, string $query, array $options = []): array
     {
+        // New msearch implementation that returns formatted results per model class
         $modelsConfig = \config('elastic.models');
-        $indices = [];
-        $perModelCfg = [];
+        $indexPrefix = \config('elastic.index_settings.prefix', '');
+
+        $body = [];
+        $map = [];
         foreach ($modelClasses as $class) {
             $cfg = $modelsConfig[$class] ?? null;
             if (! $cfg) {
                 continue;
             }
             $indexBase = $cfg['index'] ?? Str::slug(\class_basename($class));
-            $indexPrefix = \config('elastic.index_settings.prefix', '');
-            $indices[] = $indexPrefix ? $indexPrefix . '_' . $indexBase : $indexBase;
-            $perModelCfg[$class] = $cfg;
+            $indexName = $indexPrefix ? $indexPrefix . '_' . $indexBase : $indexBase;
+            $map[] = [$class, $cfg];
+            $body[] = ['index' => $indexName];
+            $body[] = $this->buildSearchBody($cfg, $query, $options);
         }
 
-        $params = $this->buildSearchParams($indices, null, $query, $options);
+        if (empty($body)) {
+            return [];
+        }
 
-        $response = $this->client->search($params)->asArray();
-        // Without per-doc type we just return raw hits with index info
-        return $response;
+        $response = $this->client->msearch(['body' => $body])->asArray();
+        $results = [];
+        $responses = $response['responses'] ?? [];
+        foreach ($responses as $i => $res) {
+            [$class, $cfg] = $map[$i];
+            $results[$class] = $this->formatResults($res, $class, $cfg, $options);
+        }
+        return $results;
+    }
+
+    protected function buildSearchBody(array $cfg, string $query, array $options): array
+    {
+        $limit = $options['limit'] ?? \config('elastic.search.default.limit', 20);
+        $offset = $options['offset'] ?? \config('elastic.search.default.offset', 0);
+
+        $body = [
+            'from' => $offset,
+            'size' => $limit,
+            'query' => $this->buildQuery($cfg, $query, $options),
+        ];
+        if (($options['highlight'] ?? \config('elastic.search.highlight.enabled', true)) === true) {
+            $body['highlight'] = [
+                'fields' => array_fill_keys(\config('elastic.search.highlight.fields', ['*']), new \stdClass()),
+                'fragment_size' => \config('elastic.search.highlight.fragment_size', 150),
+                'number_of_fragments' => \config('elastic.search.highlight.number_of_fragments', 3),
+            ];
+        }
+        if (! empty($options['filter'])) {
+            $body['query'] = [
+                'bool' => [
+                    'must' => [$body['query']],
+                    'filter' => $this->buildFilters((array) $options['filter']),
+                ],
+            ];
+        }
+        if (! empty($options['sort'])) {
+            $body['sort'] = $this->buildSort((array) $options['sort']);
+        }
+        if (! empty($options['aggs'])) {
+            $body['aggs'] = (array) $options['aggs'];
+        }
+        if (array_key_exists('track_total_hits', $options)) {
+            $body['track_total_hits'] = (bool) $options['track_total_hits'];
+        }
+        return $body;
     }
 
     protected function buildSearchParams(array $indices, ?array $cfg, string $query, array $options): array
@@ -111,6 +159,11 @@ class ElasticSearch
         // aggregations
         if (! empty($options['aggs'])) {
             $searchBody['aggs'] = (array) $options['aggs'];
+        }
+
+        // allow callers to reduce count overhead
+        if (array_key_exists('track_total_hits', $options)) {
+            $searchBody['track_total_hits'] = (bool) $options['track_total_hits'];
         }
 
         return [
@@ -171,11 +224,14 @@ class ElasticSearch
         $should = [];
         $must = [];
 
-        // Extract numeric tokens (potential size terms) and enforce matching when field exists
+        // Extract numeric tokens (potential size terms)
         $sizeTokens = $this->extractNumericTokens($query);
         $hasSizeField = in_array('size_terms', (array) ($cfg['searchable_fields'] ?? []), true)
             || array_key_exists('size_terms', (array) ($cfg['computed_fields'] ?? []));
-        if ($hasSizeField && count($sizeTokens) > 0) {
+        // Считаем запрос «размероподобным», только если в нём минимум два числа
+        // или присутствуют разделители размеров (x, -).
+        $isSizeLike = (count($sizeTokens) >= 2) || (preg_match('/[xX\-]/', $query) === 1);
+        if ($hasSizeField && $isSizeLike) {
             $must[] = [
                 'match' => [
                     'size_terms' => [
@@ -363,10 +419,32 @@ class ElasticSearch
         $model = new $modelClass();
         $query = $model->newQuery()->whereKey($ids);
 
+        // Build optimized select for root model (only explicit scalar fields + primary key)
+        $rootScalarFields = [];
+        foreach ($returnFields as $k => $v) {
+            if (is_int($k)) {
+                $rootScalarFields[] = $v;
+            }
+        }
+        $rootScalarFields[] = $model->getKeyName();
+        $rootScalarFields = array_values(array_unique(array_filter($rootScalarFields)));
+        if (!in_array('*', $rootScalarFields, true) && count($rootScalarFields) > 0) {
+            $query->select($rootScalarFields);
+        }
+
         // eager load relations based on return_fields
         foreach ($returnFields as $key => $value) {
             if (! is_int($key)) {
-                $query->with([$key]);
+                $fields = (array) $value;
+                if (!empty($fields) && !in_array('*', $fields, true)) {
+                    $query->with([$key => function ($q) use ($fields) {
+                        // always include id for relation
+                        $select = array_values(array_unique(array_merge(['id'], $fields)));
+                        $q->select($select);
+                    }]);
+                } else {
+                    $query->with([$key]);
+                }
             }
         }
 

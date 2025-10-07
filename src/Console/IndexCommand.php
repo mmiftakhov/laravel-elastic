@@ -116,6 +116,10 @@ class IndexCommand extends Command
                 $properties[$field] = [
                     'type' => $def['type'] ?? 'text',
                     'analyzer' => $def['analyzer'] ?? 'full_text_en',
+                    'fields' => [
+                        'keyword' => ['type' => 'keyword', 'ignore_above' => 256],
+                        'autocomplete' => ['type' => 'text', 'analyzer' => 'autocomplete', 'search_analyzer' => 'standard'],
+                    ],
                 ];
             }
         }
@@ -192,10 +196,14 @@ class IndexCommand extends Command
         if ($this->isCodeField($lower)) {
             return 'keyword';
         }
-        if (str_ends_with($lower, '_id')) {
+        if ($lower === 'id' || str_ends_with($lower, '_id')) {
             return 'long';
         }
-        if (preg_match('/(price|amount|total|sum)$/', $lower)) {
+        if (preg_match('/(price|price_with_tax|amount|total|sum)$/', $lower)) {
+            return 'double';
+        }
+        // Dimension and weight fields should be numeric to avoid text analyzers/localization
+        if (in_array($lower, ['internal_dia', 'outer_dia', 'width', 'weight', 'quantity'], true)) {
             return 'double';
         }
         if (preg_match('/^(is_|has_)/', $lower)) {
@@ -297,19 +305,32 @@ class IndexCommand extends Command
             if (is_int($key)) {
                 $field = $value;
                 $full = $path ? $path . '.' . $field : $field;
-                $val = \data_get($model, $full);
+                // Когда мы уже находимся внутри связанной модели ($path не пустой),
+                // нужно читать значение без префикса пути (т.е. просто 'id', а не 'category.id').
+                $val = \data_get($model, $path ? $field : $full);
 
                 if (is_array($val) || is_object($val)) {
                     // translatable JSON assumed
                     if ($indexLocalized) {
                         foreach ($locales as $locale) {
-                            $this->mergeDocValue($doc, $this->fieldKey($full . '_' . $locale), \data_get($val, $locale, \data_get($val, $fallback)));
+                            $localizedValue = \data_get($val, $locale, \data_get($val, $fallback));
+                            $this->mergeDocValue($doc, $this->fieldKey($full . '_' . $locale), $this->normalizeValueForField($full, $localizedValue));
                         }
                     } else {
-                        $this->mergeDocValue($doc, $this->fieldKey($full), \data_get($val, $fallback));
+                        $flatValue = \data_get($val, $fallback);
+                        $this->mergeDocValue($doc, $this->fieldKey($full), $this->normalizeValueForField($full, $flatValue));
                     }
                 } else {
-                    $this->mergeDocValue($doc, $this->fieldKey($full), $val);
+                    // Scalar value
+                    $baseField = $field; // last segment name
+                    $type = $this->detectFieldType($baseField);
+                    if ($indexLocalized && $type === 'text') {
+                        foreach ($locales as $locale) {
+                            $this->mergeDocValue($doc, $this->fieldKey($full . '_' . $locale), $this->normalizeValueForField($full, $val));
+                        }
+                    } else {
+                        $this->mergeDocValue($doc, $this->fieldKey($full), $this->normalizeValueForField($full, $val));
+                    }
                 }
             } else {
                 $relation = $key;
@@ -332,6 +353,33 @@ class IndexCommand extends Command
                 }
             }
         }
+    }
+
+    protected function normalizeValueForField(string $fullField, $value)
+    {
+        // Decide by base field name (last segment of path)
+        $segments = explode('.', $fullField);
+        $baseField = end($segments) ?: $fullField;
+        $type = $this->detectFieldType($baseField);
+
+        if ($type === 'boolean') {
+            // Accept 1/0, '1'/'0', true/false strings
+            if (is_bool($value)) {
+                return $value;
+            }
+            if (is_numeric($value)) {
+                return ((int) $value) === 1;
+            }
+            $lower = strtolower((string) $value);
+            if ($lower === 'true') return true;
+            if ($lower === 'false') return false;
+            if ($lower === '1') return true;
+            if ($lower === '0') return false;
+            return (bool) $value;
+        }
+
+        // No special normalization for other types for now
+        return $value;
     }
 
     protected function fieldKey(string $path): string

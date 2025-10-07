@@ -5,3 +5,5 @@
 
 - 2025-10-03 — Добавлена команда `elastic:index` с auto-mapping и bulk → [../../diary/2025/10/2025-10-03-main.md#2025-10-03-21-05-initial-es-bootstrap]
 
+- 2025-10-07 — Улучшена обработка типов данных (boolean, numeric dimensions) и исправлена работа с вложенными relations → [../../diary/2025/10/2025-10-07-main.md#2025-10-07-13-45-comprehensive-improvements]
+

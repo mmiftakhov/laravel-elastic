@@ -121,18 +121,40 @@ class ElasticSearch
 
     protected function buildQuery(?array $cfg, string $query, array $options): array
     {
+        $trimmed = trim((string) $query);
+        // Пустой запрос: возвращаем match_all, чтобы категории/страницы листинга работали с фильтрами
+        if ($trimmed === '') {
+            return ['match_all' => new \stdClass()];
+        }
+
         $fuzzyCfg = \config('elastic.search.fuzzy');
         $fuzzyEnabled = (bool) ($options['fuzzy'] ?? $fuzzyCfg['enabled'] ?? true);
         $operator = $options['operator'] ?? \config('elastic.search.default.operator', 'and');
 
         // Build field list including localized variants and subfields
-        $fields = $this->expandFields(($cfg['searchable_fields'] ?? []));
+        $translatableFields = (array) ($cfg['translatable']['fields'] ?? []);
+        $fields = $this->expandFields(($cfg['searchable_fields'] ?? []), $translatableFields);
+        // keep only text/keyword-capable fields to avoid fuzzy on boolean/numeric fields
+        $locales = \config('elastic.translatable.locales', []);
+        $allowedTextBase = array_values(array_unique(array_merge($translatableFields, ['search_data', 'size_terms', 'code', 'isbn_code', 'title', 'slug'])));
+        $fields = array_values(array_filter($fields, function ($f) use ($locales, $allowedTextBase) {
+            $parts = explode('__', $f);
+            $last = end($parts) ?: $f;
+            // strip locale suffix if present
+            foreach ($locales as $loc) {
+                if (str_ends_with($last, '_' . $loc)) {
+                    $last = substr($last, 0, -1 * (strlen($loc) + 1));
+                    break;
+                }
+            }
+            return in_array($last, $allowedTextBase, true);
+        }));
         $fieldsWithBoost = $this->applyBoosts($fields, $cfg['searchable_fields_boost'] ?? []);
 
         $multiMatch = [
             'multi_match' => [
                 'query' => $query,
-                'type' => \config('elastic.search.default.type', 'multi_match'),
+                'type' => \config('elastic.search.default.type', 'best_fields'),
                 'operator' => $operator,
                 'fields' => $fieldsWithBoost,
             ],
@@ -144,8 +166,25 @@ class ElasticSearch
 
         $keywordBoost = (float) (\config('elastic.search.keyword_match.boost', 15.0));
         $exactBoost = (float) (\config('elastic.search.exact_match.boost', 10.0));
+        $currentLocale = app()->getLocale();
 
         $should = [];
+        $must = [];
+
+        // Extract numeric tokens (potential size terms) and enforce matching when field exists
+        $sizeTokens = $this->extractNumericTokens($query);
+        $hasSizeField = in_array('size_terms', (array) ($cfg['searchable_fields'] ?? []), true)
+            || array_key_exists('size_terms', (array) ($cfg['computed_fields'] ?? []));
+        if ($hasSizeField && count($sizeTokens) > 0) {
+            $must[] = [
+                'match' => [
+                    'size_terms' => [
+                        'query' => implode(' ', $sizeTokens),
+                        'operator' => 'and',
+                    ],
+                ],
+            ];
+        }
         // exact keyword clause
         foreach ($fields as $f) {
             $should[] = [
@@ -160,11 +199,23 @@ class ElasticSearch
 
         // exact text clause
         $should[] = [
-            'match_phrase' => [
-                implode(' ', $fields) => [
-                    'query' => $query,
-                    'boost' => $exactBoost,
-                ],
+            'multi_match' => [
+                'query' => $query,
+                'type' => \config('elastic.search.default.type', 'best_fields'),
+                'fields' => $fields,
+                'operator' => $operator,
+                'boost' => $exactBoost,
+            ],
+        ];
+
+        // bool_prefix clause for incremental typing prefix matches
+        $should[] = [
+            'multi_match' => [
+                'query' => $query,
+                'type' => 'bool_prefix',
+                'fields' => $fields,
+                'operator' => $operator,
+                'boost' => 8.0,
             ],
         ];
 
@@ -180,26 +231,51 @@ class ElasticSearch
             ];
         }
 
+        $bool = [
+            'should' => array_merge([$multiMatch], $should),
+            'minimum_should_match' => 1,
+        ];
+        if (! empty($must)) {
+            $bool['must'] = $must;
+        }
         return [
-            'bool' => [
-                'must' => [$multiMatch],
-                'should' => $should,
-            ],
+            'bool' => $bool,
         ];
     }
 
-    protected function expandFields(array $searchable): array
+    protected function extractNumericTokens(string $query): array
+    {
+        $clean = preg_replace('/[^0-9.,]+/u', ' ', $query);
+        $parts = preg_split('/\s+/', trim((string) $clean));
+        $tokens = [];
+        foreach ((array) $parts as $p) {
+            $p = trim((string) $p);
+            if ($p === '') continue;
+            // normalize comma decimals to dot and trim surrounding dots
+            $p = trim(str_replace(',', '.', $p), '.');
+            // keep only digits (drop decimals to align with stored integers like 20, 47, 14)
+            $digitsOnly = preg_replace('/[^0-9]/', '', $p);
+            if ($digitsOnly !== '') {
+                $tokens[] = $digitsOnly;
+            }
+        }
+        return $tokens;
+    }
+
+    protected function expandFields(array $searchable, array $translatableFieldNames = []): array
     {
         $locales = \config('elastic.translatable.locales', []);
         $indexLocalized = (bool) (\config('elastic.translatable.index_localized_fields', true));
         $flat = [];
         $stack = $searchable;
 
-        $walker = function ($fields, $prefix = '') use (&$flat, &$walker, $locales, $indexLocalized) {
+        $walker = function ($fields, $prefix = '') use (&$flat, &$walker, $locales, $indexLocalized, $translatableFieldNames) {
             foreach ($fields as $key => $value) {
                 if (is_int($key)) {
                     $field = $prefix ? $prefix . '__' . $value : $value;
-                    if ($indexLocalized) {
+                    $baseName = $value; // last segment
+                    $shouldLocalize = $indexLocalized && in_array($baseName, $translatableFieldNames, true);
+                    if ($shouldLocalize) {
                         foreach ($locales as $locale) {
                             $flat[] = $field . '_' . $locale;
                         }
@@ -233,12 +309,35 @@ class ElasticSearch
             if (is_array($value) && array_intersect(array_keys($value), ['gte', 'lte', 'gt', 'lt'])) {
                 $result[] = ['range' => [$field => $value]];
             } elseif (is_array($value)) {
-                $result[] = ['terms' => [$field => array_values($value)]];
+                $termField = $this->guessKeywordField($field);
+                $result[] = ['terms' => [$termField => array_values($value)]];
             } else {
-                $result[] = ['term' => [$field => $value]];
+                $termField = $this->guessKeywordField($field);
+                $result[] = ['term' => [$termField => $value]];
             }
         }
         return $result;
+    }
+
+    protected function guessKeywordField(string $field): string
+    {
+        if (str_ends_with($field, '.keyword')) {
+            return $field;
+        }
+        // Для вложенных полей вида relation__id/slug/code – используем keyword сабфилд
+        $last = $field;
+        if (($pos = strrpos($field, '__')) !== false) {
+            $last = substr($field, $pos + 2);
+        }
+        $lastLower = strtolower($last);
+        // Для id (числовые поля) НЕ добавляем keyword
+        if ($lastLower === 'id') {
+            return $field;
+        }
+        if (in_array($lastLower, ['slug', 'code'], true)) {
+            return $field . '.keyword';
+        }
+        return $field;
     }
 
     protected function buildSort(array $sort): array

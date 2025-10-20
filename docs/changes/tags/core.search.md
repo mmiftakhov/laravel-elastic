@@ -6,4 +6,6 @@
 
 - 2025-10-07 — Переработан multiSearch (msearch API), оптимизация запросов к БД (select), поддержка track_total_hits и улучшена логика size_terms → [../../diary/2025/10/2025-10-07-main.md#2025-10-07-16-00-search-optimizations]
 
+- 2025-10-20 — Улучшен поиск: добавлена обработка numeric кодов, lenient mode и приоритизация по quantity → [../../diary/2025/10/2025-10-20-main.md#2025-10-20-11-03-search-improvements]
+
 

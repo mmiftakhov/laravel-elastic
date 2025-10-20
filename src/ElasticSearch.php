@@ -12,8 +12,7 @@ class ElasticSearch
     public function __construct(
         private Client $client,
         private ?CacheRepository $cache = null,
-    ) {
-    }
+    ) {}
 
     public function search(string $modelClass, string $query, array $options = []): array
     {
@@ -25,7 +24,7 @@ class ElasticSearch
 
         $indexBase = $cfg['index'] ?? Str::slug(\class_basename($modelClass));
         $indexPrefix = \config('elastic.index_settings.prefix', '');
-        $index = $indexPrefix ? $indexPrefix . '_' . $indexBase : $indexBase;
+        $index = $indexPrefix ? $indexPrefix.'_'.$indexBase : $indexBase;
 
         $params = $this->buildSearchParams([$index], $cfg, $query, $options);
 
@@ -33,7 +32,7 @@ class ElasticSearch
         $useCache = (bool) (\config('elastic.cache.enabled', true) && ! empty($options['cache']));
         $cacheKey = null;
         if ($useCache && $this->cache) {
-            $cacheKey = 'elastic:' . md5(json_encode($params));
+            $cacheKey = 'elastic:'.md5(json_encode($params));
             $cached = $this->cache->get($cacheKey);
             if ($cached) {
                 return $cached;
@@ -64,7 +63,7 @@ class ElasticSearch
                 continue;
             }
             $indexBase = $cfg['index'] ?? Str::slug(\class_basename($class));
-            $indexName = $indexPrefix ? $indexPrefix . '_' . $indexBase : $indexBase;
+            $indexName = $indexPrefix ? $indexPrefix.'_'.$indexBase : $indexBase;
             $map[] = [$class, $cfg];
             $body[] = ['index' => $indexName];
             $body[] = $this->buildSearchBody($cfg, $query, $options);
@@ -81,6 +80,7 @@ class ElasticSearch
             [$class, $cfg] = $map[$i];
             $results[$class] = $this->formatResults($res, $class, $cfg, $options);
         }
+
         return $results;
     }
 
@@ -96,7 +96,7 @@ class ElasticSearch
         ];
         if (($options['highlight'] ?? \config('elastic.search.highlight.enabled', true)) === true) {
             $body['highlight'] = [
-                'fields' => array_fill_keys(\config('elastic.search.highlight.fields', ['*']), new \stdClass()),
+                'fields' => array_fill_keys(\config('elastic.search.highlight.fields', ['*']), new \stdClass),
                 'fragment_size' => \config('elastic.search.highlight.fragment_size', 150),
                 'number_of_fragments' => \config('elastic.search.highlight.number_of_fragments', 3),
             ];
@@ -118,6 +118,7 @@ class ElasticSearch
         if (array_key_exists('track_total_hits', $options)) {
             $body['track_total_hits'] = (bool) $options['track_total_hits'];
         }
+
         return $body;
     }
 
@@ -135,7 +136,7 @@ class ElasticSearch
         // highlight
         if (($options['highlight'] ?? \config('elastic.search.highlight.enabled', true)) === true) {
             $searchBody['highlight'] = [
-                'fields' => array_fill_keys(\config('elastic.search.highlight.fields', ['*']), new \stdClass()),
+                'fields' => array_fill_keys(\config('elastic.search.highlight.fields', ['*']), new \stdClass),
                 'fragment_size' => \config('elastic.search.highlight.fragment_size', 150),
                 'number_of_fragments' => \config('elastic.search.highlight.number_of_fragments', 3),
             ];
@@ -177,7 +178,7 @@ class ElasticSearch
         $trimmed = trim((string) $query);
         // Пустой запрос: возвращаем match_all, чтобы категории/страницы листинга работали с фильтрами
         if ($trimmed === '') {
-            return ['match_all' => new \stdClass()];
+            return ['match_all' => new \stdClass];
         }
 
         $fuzzyCfg = \config('elastic.search.fuzzy');
@@ -195,11 +196,12 @@ class ElasticSearch
             $last = end($parts) ?: $f;
             // strip locale suffix if present
             foreach ($locales as $loc) {
-                if (str_ends_with($last, '_' . $loc)) {
+                if (str_ends_with($last, '_'.$loc)) {
                     $last = substr($last, 0, -1 * (strlen($loc) + 1));
                     break;
                 }
             }
+
             return in_array($last, $allowedTextBase, true);
         }));
         $fieldsWithBoost = $this->applyBoosts($fields, $cfg['searchable_fields_boost'] ?? []);
@@ -210,6 +212,7 @@ class ElasticSearch
                 'type' => \config('elastic.search.default.type', 'best_fields'),
                 'operator' => $operator,
                 'fields' => $fieldsWithBoost,
+                'lenient' => true, // Избегаем ошибок при поиске текста в числовых полях
             ],
         ];
         if ($fuzzyEnabled) {
@@ -241,11 +244,33 @@ class ElasticSearch
                 ],
             ];
         }
+
+        // Для численных запросов добавляем точное совпадение по code/isbn_code с высоким boost
+        $isNumericQuery = preg_match('/^\d+$/', trim($query)) === 1;
+        if ($isNumericQuery) {
+            $numericBoost = 20.0; // Очень высокий приоритет для точного совпадения кода
+            $should[] = [
+                'term' => [
+                    'code' => [
+                        'value' => $query,
+                        'boost' => $numericBoost,
+                    ],
+                ],
+            ];
+            $should[] = [
+                'term' => [
+                    'isbn_code' => [
+                        'value' => $query,
+                        'boost' => $numericBoost,
+                    ],
+                ],
+            ];
+        }
         // exact keyword clause
         foreach ($fields as $f) {
             $should[] = [
                 'term' => [
-                    $f . '.keyword' => [
+                    $f.'.keyword' => [
                         'value' => $query,
                         'boost' => $keywordBoost,
                     ],
@@ -261,6 +286,7 @@ class ElasticSearch
                 'fields' => $fields,
                 'operator' => $operator,
                 'boost' => $exactBoost,
+                'lenient' => true,
             ],
         ];
 
@@ -272,6 +298,7 @@ class ElasticSearch
                 'fields' => $fields,
                 'operator' => $operator,
                 'boost' => 8.0,
+                'lenient' => true,
             ],
         ];
 
@@ -279,7 +306,7 @@ class ElasticSearch
         foreach ($fields as $f) {
             $should[] = [
                 'match' => [
-                    $f . '.autocomplete' => [
+                    $f.'.autocomplete' => [
                         'query' => $query,
                         'boost' => 1.0,
                     ],
@@ -294,9 +321,34 @@ class ElasticSearch
         if (! empty($must)) {
             $bool['must'] = $must;
         }
-        return [
-            'bool' => $bool,
-        ];
+
+        // Обертываем в function_score для приоритизации товаров с quantity > 0
+        $baseQuery = ['bool' => $bool];
+
+        // Проверяем, есть ли поле quantity в searchable_fields
+        $hasQuantityField = in_array('quantity', (array) ($cfg['searchable_fields'] ?? []), true);
+
+        if ($hasQuantityField) {
+            return [
+                'function_score' => [
+                    'query' => $baseQuery,
+                    'boost_mode' => 'multiply',
+                    'score_mode' => 'sum',
+                    'functions' => [
+                        [
+                            'filter' => [
+                                'range' => [
+                                    'quantity' => ['gt' => 0],
+                                ],
+                            ],
+                            'weight' => 1000, // Огромный вес для товаров с остатком
+                        ],
+                    ],
+                ],
+            ];
+        }
+
+        return $baseQuery;
     }
 
     protected function extractNumericTokens(string $query): array
@@ -306,7 +358,9 @@ class ElasticSearch
         $tokens = [];
         foreach ((array) $parts as $p) {
             $p = trim((string) $p);
-            if ($p === '') continue;
+            if ($p === '') {
+                continue;
+            }
             // normalize comma decimals to dot and trim surrounding dots
             $p = trim(str_replace(',', '.', $p), '.');
             // keep only digits (drop decimals to align with stored integers like 20, 47, 14)
@@ -315,6 +369,7 @@ class ElasticSearch
                 $tokens[] = $digitsOnly;
             }
         }
+
         return $tokens;
     }
 
@@ -328,23 +383,24 @@ class ElasticSearch
         $walker = function ($fields, $prefix = '') use (&$flat, &$walker, $locales, $indexLocalized, $translatableFieldNames) {
             foreach ($fields as $key => $value) {
                 if (is_int($key)) {
-                    $field = $prefix ? $prefix . '__' . $value : $value;
+                    $field = $prefix ? $prefix.'__'.$value : $value;
                     $baseName = $value; // last segment
                     $shouldLocalize = $indexLocalized && in_array($baseName, $translatableFieldNames, true);
                     if ($shouldLocalize) {
                         foreach ($locales as $locale) {
-                            $flat[] = $field . '_' . $locale;
+                            $flat[] = $field.'_'.$locale;
                         }
                     } else {
                         $flat[] = $field;
                     }
                 } else {
-                    $walker((array) $value, $prefix ? $prefix . '__' . $key : $key);
+                    $walker((array) $value, $prefix ? $prefix.'__'.$key : $key);
                 }
             }
         };
 
         $walker($searchable);
+
         return array_values(array_unique($flat));
     }
 
@@ -354,6 +410,7 @@ class ElasticSearch
         foreach ($fields as $f) {
             $result[] = $f; // default no boost
         }
+
         // Note: boosts are applied in queries above using keyword/match clauses
         return $result;
     }
@@ -372,6 +429,7 @@ class ElasticSearch
                 $result[] = ['term' => [$termField => $value]];
             }
         }
+
         return $result;
     }
 
@@ -391,8 +449,9 @@ class ElasticSearch
             return $field;
         }
         if (in_array($lastLower, ['slug', 'code'], true)) {
-            return $field . '.keyword';
+            return $field.'.keyword';
         }
+
         return $field;
     }
 
@@ -406,6 +465,7 @@ class ElasticSearch
                 $result[] = [$field => ['order' => strtolower($direction) === 'desc' ? 'desc' : 'asc']];
             }
         }
+
         return $result;
     }
 
@@ -416,7 +476,7 @@ class ElasticSearch
 
         $returnFields = $cfg['return_fields'] ?? ['*'];
         /** @var Model $model */
-        $model = new $modelClass();
+        $model = new $modelClass;
         $query = $model->newQuery()->whereKey($ids);
 
         // Build optimized select for root model (only explicit scalar fields + primary key)
@@ -428,7 +488,7 @@ class ElasticSearch
         }
         $rootScalarFields[] = $model->getKeyName();
         $rootScalarFields = array_values(array_unique(array_filter($rootScalarFields)));
-        if (!in_array('*', $rootScalarFields, true) && count($rootScalarFields) > 0) {
+        if (! in_array('*', $rootScalarFields, true) && count($rootScalarFields) > 0) {
             $query->select($rootScalarFields);
         }
 
@@ -436,7 +496,7 @@ class ElasticSearch
         foreach ($returnFields as $key => $value) {
             if (! is_int($key)) {
                 $fields = (array) $value;
-                if (!empty($fields) && !in_array('*', $fields, true)) {
+                if (! empty($fields) && ! in_array('*', $fields, true)) {
                     $query->with([$key => function ($q) use ($fields) {
                         // always include id for relation
                         $select = array_values(array_unique(array_merge(['id'], $fields)));
@@ -460,6 +520,7 @@ class ElasticSearch
                 'model' => $item,
             ];
         }
+
         return [
             'total' => $response['hits']['total']['value'] ?? count($results),
             'items' => $results,
@@ -467,5 +528,3 @@ class ElasticSearch
         ];
     }
 }
-
-
